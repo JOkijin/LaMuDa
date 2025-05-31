@@ -1,0 +1,222 @@
+#!/usr/bin/env python3
+# coding=utf-8
+
+"""
+LaMuDa多技术协同系统 - 仿真管理器
+版本：1.2
+功能：协调VR仿真、空间测量、AI设计引擎的核心控制模块
+依赖：zmq, pyvarjo, numpy, openbci
+"""
+
+import time
+import zmq
+import numpy as np
+from enum import Enum
+from threading import Thread
+from dataclasses import dataclass
+
+# 使用ZeroMQ的端口配置
+VR_SIMULATOR_PORT = 5555
+SPATIAL_MEAS_PORT = 5556
+AI_ENGINE_PORT = 5557
+EEG_MONITOR_PORT = 5558
+
+class SimulationState(Enum):
+    STOPPED = 0
+    RUNNING = 1
+    PAUSED = 2
+
+class RenderMode(Enum):
+    HIGH_FIDELITY = 0  # 高保真模式：全特效开启
+    LOW_INTENSITY = 1   # 低负荷模式：关闭部分特效
+
+@dataclass
+class EEGParams:
+    theta_power: float = 0.0  # θ波功率占比
+    fatigue_level: float = 0.0 # 疲劳指数
+
+class SimulationManager:
+    def __init__(self):
+        self.state  = SimulationState.STOPPED
+        self.render_mode  = RenderMode.HIGH_FIDELITY
+        self.fov_adjustment_enabled  = True  # 动态视场调节开关
+        self.last_eeg_update  = time.time() 
+
+        # 消息通信初始化
+        self.context  = zmq.Context()
+        self._init_sockets()
+
+        # 生理监测参数
+        self.eeg_params  = EEGParams()
+
+        # 空间测量数据缓存
+        self.spatial_data_cache  = {}
+
+        # 启动后台线程处理
+        self.threads  = [
+            Thread(target=self._eeg_monitor_thread, daemon=True),
+            Thread(target=self._spatial_update_thread, daemon=True)
+        ]
+        for thread in self.threads: 
+            thread.start() 
+
+    def _init_sockets(self):
+        """初始化ZeroMQ套接字"""
+        # VR仿真控制套接字（REQ-REP模式）
+        self.vr_socket  = self.context.socket(zmq.REQ) 
+        self.vr_socket.connect(f"tcp://localhost:{VR_SIMULATOR_PORT}") 
+
+        # 空间测量数据订阅（PUB-SUB模式）
+        self.spatial_sub  = self.context.socket(zmq.SUB) 
+        self.spatial_sub.connect(f"tcp://localhost:{SPATIAL_MEAS_PORT}") 
+        self.spatial_sub.setsockopt_string(zmq.SUBSCRIBE,  "")
+
+        # AI设计引擎套接字（PUSH-PULL模式）
+        self.ai_engine_socket  = self.context.socket(zmq.PUSH) 
+        self.ai_engine_socket.connect(f"tcp://localhost:{AI_ENGINE_PORT}") 
+
+        # 生理监测套接字（ROUTER-DEALER模式）
+        self.eeg_monitor_socket  = self.context.socket(zmq.DEALER) 
+        self.eeg_monitor_socket.connect(f"tcp://localhost:{EEG_MONITOR_PORT}") 
+
+    def _eeg_monitor_thread(self):
+        """生理监测数据处理线程"""
+        while True:
+            # 接收EEG头盔数据（格式：theta_power;fatigue_level）
+            raw_data = self.eeg_monitor_socket.recv_string() 
+            theta_power, fatigue_level = map(float, raw_data.split(';')) 
+            self.eeg_params.theta_power  = theta_power
+            self.eeg_params.fatigue_level  = fatigue_level
+            self.last_eeg_update  = time.time() 
+
+            # 生理指标驱动渲染调整
+            if self.state  == SimulationState.RUNNING:
+                self._adjust_render_by_eeg()
+
+    def _spatial_update_thread(self):
+        """空间测量更新线程"""
+        while True:
+            # 接收SLAM数据（JSON格式：{"object_id": [x, y, z, quat]}）
+            spatial_data = self.spatial_sub.recv_json() 
+            self.spatial_data_cache.update(spatial_data) 
+            
+            # VR场景实时更新
+            if self.state  == SimulationState.RUNNING:
+                self.vr_socket.send_json({ 
+                    "command": "UPDATE_OBJECTS",
+                    "data": spatial_data
+                })
+                self.vr_socket.recv_string()   # 等待ACK
+
+    def _adjust_render_by_eeg(self):
+        """根据EEG数据调整渲染模式"""
+        THETA_ALERT_THRESHOLD = 0.4  # θ波阈值
+        
+        # 持续超阈值的处理
+        if self.eeg_params.theta_power  >= THETA_ALERT_THRESHOLD:
+            if self.render_mode  != RenderMode.LOW_INTENSITY:
+                self.switch_render_mode(RenderMode.LOW_INTENSITY) 
+        else:
+            if self.render_mode  == RenderMode.LOW_INTENSITY:
+                self.switch_render_mode(RenderMode.HIGH_FIDELITY) 
+
+    def switch_render_mode(self, mode: RenderMode):
+        """切换渲染模式并发送配置参数"""
+        self.render_mode  = mode
+        config = {}
+        if mode == RenderMode.LOW_INTENSITY:
+            config = {
+                "resolution_scale": 0.7,
+                "max_fps": 60,
+                "disabled_effects": ["ambient_occlusion", "ray_tracing"]
+            }
+        else:
+            config = {
+                "resolution_scale": 1.0,
+                "max_fps": 120,
+                "disabled_effects": []
+            }
+        
+        # 发送配置到VR渲染器
+        self.vr_socket.send_json({ 
+            "command": "SET_RENDER_MODE",
+            "config": config
+        })
+        self.vr_socket.recv_string()   # 等待确认
+        print(f"渲染模式已切换至：{mode.name}") 
+
+    def generate_design_variants(self, design_brief: dict):
+        """通过AI设计引擎生成方案变体"""
+        # 发送设计需求到AI引擎
+        self.ai_engine_socket.send_json(design_brief) 
+        # 异步处理，结果通过回调返回
+
+    def start_simulation(self, scene_file: str):
+        """启动VR仿真场景"""
+        if self.state  != SimulationState.STOPPED:
+            return False
+        
+        # 指令加载场景
+        self.vr_socket.send_json({ 
+            "command": "LOAD_SCENE",
+            "scene_file": scene_file
+        })
+        resp = self.vr_socket.recv_string() 
+        if resp == "OK":
+            self.state  = SimulationState.RUNNING
+            return True
+        return False
+
+    def pause_simulation(self):
+        """暂停仿真"""
+        if self.state  == SimulationState.RUNNING:
+            self.vr_socket.send_json({"command":  "PAUSE"})
+            self.vr_socket.recv_string()   # 等待ACK
+            self.state  = SimulationState.PAUSED
+
+    def resume_simulation(self):
+        """继续仿真"""
+        if self.state  == SimulationState.PAUSED:
+            self.vr_socket.send_json({"command":  "RESUME"})
+            self.vr_socket.recv_string()   # 等待ACK
+            self.state  = SimulationState.RUNNING
+
+    def stop_simulation(self):
+        """停止仿真并释放资源"""
+        if self.state  != SimulationState.STOPPED:
+            self.vr_socket.send_json({"command":  "STOP"})
+            self.vr_socket.recv_string() 
+            self.state  = SimulationState.STOPPED
+
+    def update_fov_dynamically(self, head_velocity: np.ndarray): 
+        """动态调整视场角 (需Varjo SDK支持)"""
+        if not self.fov_adjustment_enabled: 
+            return
+        
+        # 基于头部运动速度计算视场缩放因子
+        # 参考论文：动态视场调节算法(SIGGRAPH 2024)
+        speed = np.linalg.norm(head_velocity) 
+        scaling_factor = max(0.85, 1 - 0.005 * speed)  # 经验公式
+        
+        # 调用Varjo硬件SDK调整FOV
+        # 注：此处为伪代码，实际需接入Varjo SDK
+        self.vr_socket.send_json({ 
+            "command": "SET_FOV_SCALE",
+            "scale": scaling_factor
+        })
+        self.vr_socket.recv_string() 
+
+# 模块测试入口
+if __name__ == "__main__":
+    manager = SimulationManager()
+    
+    # 示例：启动场景
+    if manager.start_simulation("scene_config.json"): 
+        print("仿真已启动")
+        time.sleep(10) 
+        manager.pause_simulation() 
+        time.sleep(5) 
+        manager.resume_simulation() 
+        time.sleep(15) 
+        manager.stop_simulation() 
+        print("仿真结束")

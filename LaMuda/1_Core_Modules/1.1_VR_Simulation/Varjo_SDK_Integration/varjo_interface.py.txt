@@ -1,0 +1,237 @@
+#!/usr/bin/env python3 
+# -*- coding: utf-8 -*-
+"""
+Varjo XR-4接口模块 - 实现VR仿真核心功能 
+功能说明：
+1. 动态视场调节算法实现 
+2. 眼动追踪优化渲染 
+3. 生理状态监测与模式切换 
+4. 硬件设备控制接口 
+"""
+ 
+import time 
+import math 
+import numpy as np 
+import threading 
+from typing import Tuple, Dict, Any 
+ 
+# 虚拟硬件模拟参数（实际开发需替换为Varjo SDK）
+XR4_CONFIG = {
+    "fov_range": (87, 115),     # 水平视野角范围(度)
+    "refresh_rate": 240,        # 屏幕刷新率(Hz)
+    "eye_tracking_fps": 120,     # 眼动追踪采样率 
+    "display_resolution": (2880, 2720),  # 单眼分辨率(宽x高)
+}
+ 
+class VarjoInterface:
+    """
+    Varjo XR-4头显设备控制接口 
+    实现基于Varjo XR-4硬件的VR仿真模块核心功能 
+    """
+    
+    def __init__(self, config: Dict[str, Any] = None):
+        """
+        初始化Varjo设备接口 
+        :param config: 设备配置参数（默认为XR4_CONFIG）
+        """
+        self.config  = config or XR4_CONFIG.copy() 
+        self.current_fov  = 115  # 当前视野角度(默认最大值)
+        self.eye_position  = (0.5, 0.5)  # 归一化的注视点坐标(x,y)
+        self.user_state  = {"eeg_theta": 30, "motion": "stable"}  # 用户生理状态 
+        self.is_running  = False 
+        
+        # 渲染质量模式 (0:标准, 1:低强度, 2:节电)
+        self.rendering_mode  = 0 
+        
+        # 视场调节算法参数 
+        self.fov_adjustment_params  = {
+            "max_reduction": 20,    # 最大视场缩减度 
+            "stability_threshold": 0.1,  # 运动稳定阈值 
+            "theta_threshold": 40   # θ波阈值(%)
+        }
+        
+        # 眼动追踪缓存区 
+        self.gaze_buffer  = np.full((5,  2), 0.5)  # 存储最近5帧注视位置 
+        
+    def connect(self) -> bool:
+        """连接物理设备，返回连接状态"""
+        # TODO: 实际开发中需实现与硬件SDK的连接 
+        print(f"🟢 连接Varjo XR-4: 分辨率{self.config['display_resolution']}@{self.config['refresh_rate']}Hz") 
+        self.is_running  = True 
+        return True 
+    
+    def start_eye_tracking(self):
+        """启动眼动追踪线程"""
+        if not self.is_running: 
+            self.connect() 
+            
+        print("👁️ 启动眼动追踪...")
+        # 创建后台线程模拟眼动数据更新 
+        self.eye_thread  = threading.Thread(target=self._simulate_eye_movement)
+        self.eye_thread.daemon  = True 
+        self.eye_thread.start() 
+    
+    def _simulate_eye_movement(self):
+        """模拟眼动追踪数据更新（实际应接入SDK数据流）"""
+        while self.is_running: 
+            # 生成随机噪声偏移 
+            x_offset = np.random.uniform(-0.1,  0.1)
+            y_offset = np.random.uniform(-0.05,  0.05)
+            
+            # 更新并稳定注视点 
+            new_x = max(0.1, min(0.9, self.eye_position[0]  + x_offset))
+            new_y = max(0.1, min(0.9, self.eye_position[1]  + y_offset))
+            self.eye_position  = (new_x, new_y)
+            
+            # 更新缓存区（移动平均）
+            self.gaze_buffer  = np.roll(self.gaze_buffer,  1, axis=0)
+            self.gaze_buffer[0]  = [new_x, new_y]
+            
+            time.sleep(1  / self.config["eye_tracking_fps"]) 
+    
+    def dynamic_fov_adjustment(self) -> float:
+        """
+        动态视场调节算法 
+        基于用户生理状态和运动数据自动优化视野范围 
+        :return: 优化后的视野角度 
+        """
+        # 1. 计算注视点稳定性（位置变化方差）
+        gaze_stability = np.std(self.gaze_buffer,  axis=0).mean()
+        
+        # 2. 确定视场缩减比例（0.0-1.0）
+        reduction_factor = max(0, min(1, 
+            self.user_state["eeg_theta"]  / self.fov_adjustment_params["theta_threshold"]  +
+            gaze_stability / self.fov_adjustment_params["stability_threshold"] 
+        ))
+        
+        # 3. 计算新视野角度 
+        fov_range = self.config["fov_range"] 
+        max_reduction = self.fov_adjustment_params["max_reduction"] 
+        target_fov = fov_range[1] - (reduction_factor * max_reduction)
+        
+        # 4. 平滑过渡（惯性滤波）
+        self.current_fov  = 0.8 * self.current_fov  + 0.2 * target_fov 
+        
+        print(f"🔄 FOV调整: {self.current_fov:.1f}°  | "
+              f"因子:{reduction_factor:.2f} | "
+              f"稳定:{gaze_stability:.3f} | "
+              f"θ波:{self.user_state['eeg_theta']}%") 
+        
+        return self.current_fov  
+    
+    def gaze_optimized_rendering(self):
+        """
+        眼动追踪优化渲染 
+        在注视点中心区域进行高质量渲染 
+        :return: 渲染参数配置 
+        """
+        # 计算中心区域（直径占屏幕宽度30%）
+        focus_x, focus_y = self.eye_position  
+        fov_rad = math.radians(self.current_fov) 
+        
+        # 计算渲染质量分布 
+        quality_params = {
+            "center_resolution": 1.0,  # 中心区最高质量 
+            "peripheral_reduction": 0.5,  # 周边质量降低比例 
+            "blend_radius": 0.15  # 混合区半径(相对值)
+        }
+        
+        # 实际渲染负载优化计算 
+        optimized_load = 0.65 * quality_params["center_resolution"] + \
+                         0.35 * (1 - quality_params["peripheral_reduction"])
+        
+        print(f"👁️ 注视点渲染优化: ({focus_x:.2f}, {focus_y:.2f}) | "
+              f"负载系数: {optimized_load:.2f}")
+        
+        return {
+            "focus_position": (focus_x, focus_y),
+            **quality_params,
+            "gpu_load_reduction": 1 - optimized_load 
+        }
+    
+    def update_user_state(self, eeg_theta: float, motion_data: dict):
+        """
+        更新用户生理状态数据 
+        :param eeg_theta: θ波强度百分比 
+        :param motion_data: 运动状态数据 
+        """
+        self.user_state["eeg_theta"]  = eeg_theta 
+        self.user_state["motion"]  = self._interpret_motion(motion_data)
+        
+        # 根据θ波强度切换渲染模式 
+        if eeg_theta > 40 and self.rendering_mode  != 1:
+            print("🟡 用户眩晕风险! 切换至低强度模式")
+            self.rendering_mode  = 1 
+        elif eeg_theta <= 35 and self.rendering_mode  != 0:
+            print("🟢 用户状态恢复! 切换至标准模式")
+            self.rendering_mode  = 0 
+    
+    def _interpret_motion(self, motion_data: dict) -> str:
+        """分析运动数据并返回状态描述"""
+        # 简化的运动状态分析（实际应使用传感器融合算法）
+        linear_accel = motion_data.get("linear_acceleration",  0)
+        angular_vel = motion_data.get("angular_velocity",  0)
+        
+        if linear_accel > 2.0 or angular_vel > 45:
+            return "rapid_movement"
+        elif linear_accel > 0.5 or angular_vel > 15:
+            return "moderate_movement"
+        return "stable"
+    
+    def get_rendering_mode(self) -> int:
+        """获取当前渲染模式"""
+        return self.rendering_mode  
+    
+    def shutdown(self):
+        """安全关闭设备连接"""
+        print("🔴 关闭Varjo接口...")
+        self.is_running  = False 
+        if hasattr(self, 'eye_thread') and self.eye_thread.is_alive(): 
+            self.eye_thread.join(timeout=1.0) 
+        
+    @staticmethod 
+    def hardware_test():
+        """设备自检流程"""
+        print("="*40)
+        print("Varjo XR-4 硬件自检:")
+        print(f"• 显示屏: {XR4_CONFIG['display_resolution']} @{XR4_CONFIG['refresh_rate']}Hz")
+        print(f"• 眼动追踪: {XR4_CONFIG['eye_tracking_fps']}fps")
+        print(f"• FOV范围: {XR4_CONFIG['fov_range'][0]}°-{XR4_CONFIG['fov_range'][1]}°")
+        print("="*40)
+ 
+# 示例使用 
+if __name__ == "__main__":
+    # 1. 设备初始化 
+    varjo = VarjoInterface()
+    VarjoInterface.hardware_test() 
+    
+    if varjo.connect(): 
+        # 2. 启动眼动追踪 
+        varjo.start_eye_tracking() 
+        
+        # 3. 模拟用户活动循环 
+        for t in range(15):
+            # 模拟EEG数据变化（正常->疲劳->恢复）
+            theta_level = 30 + t * 2 if t < 7 else 46 - (t - 7) * 3 
+            
+            # 更新用户状态 
+            varjo.update_user_state( 
+                eeg_theta=theta_level,
+                motion_data={"linear_acceleration": 1.5, "angular_velocity": 20}
+            )
+            
+            # 执行动态FOV优化 
+            fov = varjo.dynamic_fov_adjustment() 
+            
+            # 执行注视点渲染优化 
+            render_config = varjo.gaze_optimized_rendering() 
+            
+            # 根据渲染模式采取不同策略 
+            mode = varjo.get_rendering_mode() 
+            if mode == 1:
+                print("启用低强度渲染方案...")
+            
+            time.sleep(1) 
+        
+        # 4. 关闭设备 
+        varjo.shutdown() 

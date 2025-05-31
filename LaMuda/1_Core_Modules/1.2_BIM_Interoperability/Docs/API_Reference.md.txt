@@ -1,0 +1,3 @@
+curl -X POST https://api.lamuda-system.com/v1/auth/token  \
+  -H "Content-Type: application/json" \
+  -d '{"apikey": "YOUR_CLIENT_ID", "secret": "YOUR_SECRET"}'

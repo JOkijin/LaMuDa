@@ -1,0 +1,81 @@
+# ======== 基础环境 ========
+FROM nvidia/cuda:12.1.1-base-ubuntu22.04 AS base 
+ENV DEBIAN_FRONTEND=noninteractive 
+ 
+# 安装核心依赖 
+RUN apt-get update && \
+    apt-get install -y \
+    python3.10-dev \
+    python3-pip \
+    build-essential \
+    cmake \
+    git \
+    libopencv-dev \
+    libgl1-mesa-glx \
+    libosmesa6-dev \
+    freeglut3-dev \
+    libusb-1.0-0-dev \
+    libssl-dev 
+ 
+# ======== 专用硬件支持层 ========
+FROM base AS hardware-support 
+ 
+# Intel RealSense LiDAR驱动 (支持SLAM定位)
+RUN git clone https://github.com/IntelRealSense/librealsense.git  && \
+    cd librealsense && \
+    mkdir build && cd build && \
+    cmake .. -DBUILD_PYTHON_BINDINGS=bool:true && \
+    make -j$(nproc) && make install 
+ 
+# Varjo VR头盔SDK集成 (满足240Hz要求)
+RUN wget https://developer.varjo.com/sdk/Varjo_SDK_Linux_3.0.0.tar.gz  && \
+    tar -zxvf Varjo_SDK_Linux_3.0.0.tar.gz  && \
+    cd Varjo_SDK && \
+    ./install.sh  --silent 
+ 
+# ======== 主应用环境 ========
+FROM base AS app-env 
+COPY --from=hardware-support /usr/local/lib /usr/local/lib 
+COPY --from=hardware-support /opt/varjo /opt/varjo 
+ 
+# 设置Python虚拟环境 
+RUN python3.10 -m venv /venv 
+ENV PATH="/venv/bin:$PATH"
+ 
+# 复制依赖列表 
+COPY requirements.txt  /app/
+WORKDIR /app 
+ 
+# 安装Python依赖（兼容CUDA 12.1）
+RUN pip install --no-cache-dir -U pip setuptools wheel && \
+    pip install --no-cache-dir -r requirements.txt  \
+    --extra-index-url https://download.pytorch.org/whl/cu121  
+ 
+# 区块链安全层 (Hyperledger Fabric支持)
+RUN curl -sSL https://bit.ly/2ysbOFE  | bash -s -- 2.5.0 1.5.9 -s 
+ 
+# ======== 应用部署 ========
+FROM app-env AS deploy 
+ 
+# 复制核心模块 
+COPY Core_Modules/ ./Core_Modules 
+COPY Auxiliary_Modules/ ./Auxiliary_Modules 
+ 
+# 配置跨设备通信端口 
+EXPOSE 8080  # VR控制接口 
+EXPOSE 50051 # gRPC双向流 (实时协同)
+EXPOSE 8545  # 区块链节点 
+ 
+# 核心环境变量配置 
+ENV NVIDIA_VISIBLE_DEVICES=all 
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility 
+ENV DISPLAY=:0 
+ENV VARJO_SDK_PATH=/opt/varjo 
+ 
+# 运行时挂载点 (BIM缓存/点云数据)
+VOLUME ["/bim_cache", "/pointcloud_data"]
+ 
+# 启动脚本 (检测硬件状态)
+COPY entrypoint.sh  .
+RUN chmod +x entrypoint.sh  
+ENTRYPOINT ["./entrypoint.sh"] 

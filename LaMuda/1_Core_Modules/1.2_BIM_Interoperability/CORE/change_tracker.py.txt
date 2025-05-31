@@ -1,0 +1,215 @@
+#!/usr/bin/env python3 
+# change_tracker.py  - BIM变更追踪与区块链存证系统 
+# 用于多技术协同系统（LaMuDa系统）的设计变更管理 
+import hashlib 
+import json 
+import time 
+from watchdog.observers  import Observer 
+from watchdog.events  import FileSystemEventHandler 
+import sqlite3 
+from web3 import Web3 
+from pathlib import Path 
+# === 配置参数 === 
+CONFIG = {
+    "BIM_DIR": "path/to/bim_files",  # 监控的BIM目录 
+    "SQLITE_DB": "design_changes.db",   # 本地变更数据库 
+    "ETH_NODE": "https://mainnet.infura.io/v3/YOUR_API_KEY",   # 以太坊节点 
+    "CONTRACT_ADDRESS": "0xYourContractAddress",  # 智能合约地址 
+    "ETH_PRIVATE_KEY": "your_private_key",  # 以太坊账户私钥 
+    "CHANGE_THRESHOLD": 0.06  # 变更阈值（6%）
+}
+# === BIM变更处理器 === 
+class BIMChangeHandler(FileSystemEventHandler):
+    """监控BIM文件变更并处理"""
+    
+    def __init__(self, tracker):
+        super().__init__()
+        self.tracker  = tracker 
+        
+    def on_modified(self, event):
+        if not event.is_directory  and event.src_path.endswith(('.rvt',  '.ifc')):
+            print(f"检测到BIM文件变更: {event.src_path}") 
+            self.tracker.process_change(event.src_path,  "MODIFY")
+    def on_created(self, event):
+        if not event.is_directory  and event.src_path.endswith(('.rvt',  '.ifc')):
+            print(f"检测到新BIM文件: {event.src_path}") 
+            self.tracker.process_change(event.src_path,  "CREATE")
+# === 变更追踪核心类 === 
+class ChangeTracker:
+    """设计变更追踪与存证系统"""
+    
+    def __init__(self, config):
+        self.config  = config 
+        self.db_conn  = sqlite3.connect(config['SQLITE_DB']) 
+        self._init_db()
+        
+        # 连接以太坊 
+        self.w3 = Web3(Web3.HTTPProvider(config['ETH_NODE']))
+        if not self.w3.is_connected(): 
+            raise ConnectionError("无法连接以太坊节点")
+        
+        # 加载智能合约 
+        with open('DesignRegistryABI.json')  as f:
+            contract_abi = json.load(f) 
+        self.contract  = self.w3.eth.contract( 
+            address=config['CONTRACT_ADDRESS'],
+            abi=contract_abi 
+        )
+        
+        # 设置账户 
+        self.account  = self.w3.eth.account.from_key(config['ETH_PRIVATE_KEY']) 
+        
+    def _init_db(self):
+        """初始化数据库"""
+        cursor = self.db_conn.cursor() 
+        cursor.execute(''' 
+            CREATE TABLE IF NOT EXISTS changes (
+                id INTEGER PRIMARY KEY,
+                file_path TEXT NOT NULL,
+                change_type TEXT NOT NULL,
+                change_hash TEXT NOT NULL,
+                timestamp REAL NOT NULL,
+                impacted_components INTEGER,
+                block_height INTEGER,
+                tx_hash TEXT 
+            )
+        ''')
+        self.db_conn.commit() 
+    
+    def calculate_file_hash(self, file_path):
+        """计算文件内容的哈希值"""
+        hasher = hashlib.sha256() 
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(8192): 
+                hasher.update(chunk) 
+        return hasher.hexdigest() 
+    
+    def analyze_change_impact(self, file_path):
+        """分析变更影响（简化版，实际应集成BIM解析）"""
+        # 在真实系统中应使用Forge API解析BIM 
+        file_size = Path(file_path).stat().st_size 
+        return int(file_size / 1024)  # 模拟受影响构件数 
+    
+    def process_change(self, file_path, change_type):
+        """处理变更事件"""
+        # 1. 计算变更哈希 
+        change_hash = self.calculate_file_hash(file_path) 
+        
+        # 2. 分析变更影响 
+        impacted_components = self.analyze_change_impact(file_path) 
+        
+        # 3. 本地数据库记录 
+        timestamp = time.time() 
+        cursor = self.db_conn.cursor() 
+        cursor.execute(''' 
+            INSERT INTO changes 
+            (file_path, change_type, change_hash, timestamp, impacted_components) 
+            VALUES (?, ?, ?, ?, ?)
+        ''', (file_path, change_type, change_hash, timestamp, impacted_components))
+        self.db_conn.commit() 
+        
+        # 4. 区块链存证 
+        try:
+            receipt = self.store_on_blockchain(file_path,  change_hash, change_type)
+            block_height = receipt['blockNumber']
+            tx_hash = receipt['transactionHash'].hex()
+            
+            # 更新数据库记录 
+            cursor.execute(''' 
+                UPDATE changes SET block_height=?, tx_hash=? 
+                WHERE id=?
+            ''', (block_height, tx_hash, cursor.lastrowid)) 
+            self.db_conn.commit() 
+        except Exception as e:
+            print(f"区块链存证失败: {str(e)}")
+            # 失败处理逻辑（可添加重试机制）
+        
+        # 5. 变更率检查 
+        self.check_change_rate() 
+    
+    def store_on_blockchain(self, file_path, change_hash, change_type):
+        """将变更记录到区块链"""
+        # 构造交易 
+        nonce = self.w3.eth.get_transaction_count(self.account.address) 
+        tx = self.contract.functions.registerChange( 
+            Path(file_path).name,  # 文件名 
+            change_hash,
+            change_type,
+            int(time.time()) 
+        ).build_transaction({
+            'chainId': 1,  # 主网 
+            'gas': 200000,
+            'gasPrice': self.w3.to_wei('50',  'gwei'),
+            'nonce': nonce,
+        })
+        
+        # 签名并发送 
+        signed_tx = self.w3.eth.account.sign_transaction(tx,  self.config['ETH_PRIVATE_KEY']) 
+        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction) 
+        
+        # 等待交易确认 
+        return self.w3.eth.wait_for_transaction_receipt(tx_hash) 
+    
+    def calculate_change_rate(self, hours=24):
+        """计算最近24小时变更率"""
+        cursor = self.db_conn.cursor() 
+        cursor.execute(''' 
+            SELECT COUNT(*), SUM(impacted_components) 
+            FROM changes 
+            WHERE timestamp >= ?
+        ''', (time.time()  - hours*3600,))
+        
+        total_changes, total_impact = cursor.fetchone() 
+        if total_changes == 0:
+            return 0.0 
+        
+        # 获取基准值（应来自项目初始化数据）
+        BASE_COMPONENTS = 1000  # 实际应从项目元数据获取 
+        
+        # 变更率 = 受影响组件总数 / 基准组件总数 
+        return total_impact / BASE_COMPONENTS 
+    
+    def check_change_rate(self):
+        """检查变更率是否超过阈值"""
+        change_rate = self.calculate_change_rate() 
+        print(f"当前变更率: {change_rate:.2%}")
+        
+        if change_rate >= self.config['CHANGE_THRESHOLD']: 
+            self.trigger_alert(change_rate) 
+    
+    def trigger_alert(self, change_rate):
+        """触发变更警报"""
+        # 此处应集成系统的预警模块 
+        # 演示时使用打印日志替代 
+        print(f"⚠️ 警告：设计变更率已达 {change_rate:.2%}，超过阈值 {self.config['CHANGE_THRESHOLD']:.2%}") 
+        # 实际系统中应触发：邮件通知、系统日志警告、界面弹窗等 
+    
+    def start_monitoring(self):
+        """启动文件监控"""
+        event_handler = BIMChangeHandler(self)
+        observer = Observer()
+        observer.schedule(event_handler,  self.config['BIM_DIR'],  recursive=True)
+        observer.start() 
+        
+        print(f"开始监控BIM目录: {self.config['BIM_DIR']}") 
+        try:
+            while True:
+                time.sleep(1) 
+        except KeyboardInterrupt:
+            observer.stop() 
+        observer.join() 
+# === 主程序 === 
+if __name__ == "__main__":
+    tracker = ChangeTracker(CONFIG)
+    
+    print("""
+    ██╗  ██╗██████╗ ███╗   ███╗ ██████╗ ███████╗ 
+    ██║  ██║╚════██╗████╗ ████║██╔═══██╗██╔════╝ 
+    ███████║ █████╔╝██╔████╔██║██║   ██║███████╗ 
+    ██╔══██║ ╚═══██╗██║╚██╔╝██║██║   ██║╚════██║ 
+    ██║  ██║██████╔╝██║ ╚═╝ ██║╚██████╔╝███████║ 
+    ╚═╝  ╚═╝╚═════╝ ╚═╝     ╚═╝ ╚═════╝ ╚══════╝ 
+    设计变更追踪系统 v1.0 | 支持区块链存证 
+    """)
+    
+    tracker.start_monitoring() 

@@ -1,0 +1,277 @@
+// webxr_bridge.js  - 多模态XR交互桥接器 
+// 版本：1.2 (2024-06-20)
+// 依赖：Three.js  r152+，WebXR API，TensorFlow.js  
+ 
+class WebXRBridge {
+  constructor(options = {}) {
+    // 配置参数解析 
+    this.config  = {
+      renderer: null,
+      bimEndpoint: options.bimEndpoint  || 'https://bim-api.example.com', 
+      minFPS: options.minFPS  || 72,   // VR最低帧率要求 
+      slamPrecision: 0.003,          // SLAM定位精度(米)
+      ...options 
+    };
+    
+    // 状态管理 
+    this.session  = null;
+    this.referenceSpace  = null;
+    this.eyeTrackers  = new Map();
+    this.crossModalQueue  = [];
+    
+    // 初始化子系统 
+    this._initSLAM();
+    this._initGestureRecognition();
+  }
+ 
+  // ======================
+  // 核心功能实现
+  // ======================
+  
+  async initXR() {
+    // 检查WebXR支持性 
+    if (!navigator.xr)  {
+      throw new Error("WebXR not supported");
+    }
+    
+    // 创建Three.js 渲染器集成 
+    this.renderer  = this.config.renderer  || new THREE.WebGLRenderer({ 
+      antialias: true,
+      alpha: true
+    });
+    this.renderer.xr.enabled  = true;
+    
+    // 启动XR会话
+    this.session  = await navigator.xr.requestSession('immersive-vr',  {
+      requiredFeatures: ['local-floor', 'hand-tracking', 'eye-tracking']
+    });
+    
+    // 初始化参考空间 
+    this.referenceSpace  = await this.session.requestReferenceSpace('local-floor'); 
+    
+    // 设置眼动追踪 
+    this._initEyeTracking();
+    
+    // 连接BIM数据流
+    this._connectBIMStream();
+    
+    // 启动主循环
+    this.session.requestAnimationFrame(this._renderLoop.bind(this)); 
+  }
+ 
+  // ======================
+  // SLAM定位子系统 
+  // ======================
+  
+  _initSLAM() {
+    // 基于偏振光补偿的SLAM核心 
+    this.slamProcessor  = new Worker('slam_worker.js'); 
+    this.slamProcessor.onmessage  = (event) => {
+      const { position, rotation, velocity } = event.data; 
+      this.currentPose  = { position, rotation, velocity };
+      
+      // BIM坐标转换 (WebXR -> BIM坐标系)
+      const bimCoords = this._convertToBIMCoords(position);
+      this._sendToBIM('position_update', bimCoords);
+    };
+  }
+ 
+  updateSLAM(frame) {
+    // 从XRFrame获取传感器数据
+    const pose = frame.getViewerPose(this.referenceSpace); 
+    if (!pose) return;
+    
+    // 获取关键传感器数据 
+    const sensorData = {
+      gyro: frame.getDeviceGyro(), 
+      accelerometer: frame.getDeviceAcceleration(), 
+      depth: frame.getDepthData()  // 深度摄像头数据 
+    };
+    
+    // 发送到SLAM工作线程
+    this.slamProcessor.postMessage(sensorData); 
+  }
+ 
+  // ======================
+  // 眼动追踪子系统 
+  // ======================
+  
+  _initEyeTracking() {
+    if (this.session.enabledFeatures.includes('eye-tracking'))  {
+      this.eyeTracker  = this.session.requestEyeTracker(); 
+      this.eyeTracker.addEventListener('gaze',  this._handleGaze.bind(this)); 
+      
+      // 动态视场调节 (参考文本1.4节)
+      this.foveatedRendering  = new FoveatedRenderer(this.renderer,  {
+        foveaRadius: 5,   // 中央5度全分辨率 
+        peripheryResolution: 0.5
+      });
+    }
+  }
+ 
+  _handleGaze(event) {
+    // 获取凝视点数据 
+    const gazePoint = event.gazePoint; 
+    this.eyeTrackers.set(event.source,  gazePoint);
+    
+    // 触发动态渲染优化 
+    this.foveatedRendering.setFocalPoint(gazePoint); 
+    
+    // 发送到行为分析系统 
+    this._sendToAnalytics('gaze_tracking', {
+      timestamp: Date.now(), 
+      coordinates: gazePoint
+    });
+  }
+ 
+  // ======================
+  // BIM数据桥接
+  // ======================
+  
+  async _connectBIMStream() {
+    // 建立BIM WebSocket连接 
+    this.bimSocket  = new WebSocket(`${this.config.bimEndpoint}/stream`); 
+    
+    this.bimSocket.onmessage  = (event) => {
+      const data = JSON.parse(event.data); 
+      switch (data.type)  {
+        case 'model_update':
+          this._loadBIMGeometry(data.payload); 
+          break;
+        case 'collision_alert':
+          this._triggerHapticFeedback(0.8, 200);
+          break;
+      }
+    };
+  }
+ 
+  _sendToBIM(eventType, payload) {
+    if (this.bimSocket.readyState  === WebSocket.OPEN) {
+      this.bimSocket.send(JSON.stringify({ 
+        type: eventType,
+        payload
+      }));
+    }
+  }
+ 
+  // ======================
+  // 多模态交互处理器 
+  // ======================
+  
+  _initGestureRecognition() {
+    // 加载TensorFlow手势模型 
+    this.gestureModel  = tf.loadLayersModel('models/gesture_recognition/model.json'); 
+    
+    // 手势监听器
+    this.session.addEventListener('handtracking',  (event) => {
+      this.crossModalQueue.push({ 
+        type: 'gesture',
+        data: event.joints, 
+        timestamp: event.frame.timestamp 
+      });
+    });
+  }
+ 
+  async processCrossModal() {
+    // 多模态指令融合处理 (参考文本1.8节)
+    while (this.crossModalQueue.length  > 0) {
+      const event = this.crossModalQueue.shift(); 
+      
+      switch (event.type)  {
+        case 'gesture':
+          const gesture = await this._recognizeGesture(event.data); 
+          this._executeCommand(gesture);
+          break;
+        case 'voice':
+          // 语音指令处理
+          break;
+      }
+    }
+  }
+ 
+  // ======================
+  // 核心渲染循环 
+  // ======================
+  
+  _renderLoop(timestamp, frame) {
+    // 性能监控
+    const frameStart = performance.now(); 
+    
+    // 更新SLAM定位
+    this.updateSLAM(frame); 
+    
+    // 处理多模态交互
+    this.processCrossModal(); 
+    
+    // 动态画质调整 
+    this._adjustQuality(frameStart);
+    
+    // 渲染场景
+    this.renderer.render(this.scene,  this.camera); 
+    
+    // 维持帧率 
+    const renderTime = performance.now()  - frameStart;
+    const targetFrameTime = 1000 / this.config.minFPS; 
+    if (renderTime < targetFrameTime) {
+      setTimeout(() => {
+        this.session.requestAnimationFrame(this._renderLoop.bind(this)); 
+      }, targetFrameTime - renderTime);
+    } else {
+      this.session.requestAnimationFrame(this._renderLoop.bind(this)); 
+    }
+  }
+ 
+  // ======================
+  // 辅助方法 
+  // ======================
+  
+  _convertToBIMCoords(xrPosition) {
+    // 坐标系转换 (WebXR右手系 -> BIM左手系)
+    return {
+      x: xrPosition.x,
+      y: xrPosition.z,  // Y/Z轴互换 
+      z: -xrPosition.y,
+      units: 'meters'
+    };
+  }
+ 
+  _triggerHapticFeedback(intensity, duration) {
+    // 触觉反馈 (参考文本2.3节)
+    if (this.session.hapticActuators)  {
+      this.session.hapticActuators.forEach(actuator  => {
+        actuator.pulse(intensity,  duration);
+      });
+    }
+  }
+ 
+  _adjustQuality(frameStartTime) {
+    // 动态画质调节算法 
+    if (this.frameTimes.length  > 60) {
+      const avgTime = this.frameTimes.reduce((a,b)  => a+b) / this.frameTimes.length; 
+      const targetTime = 1000 / this.config.minFPS; 
+      
+      if (avgTime > targetTime * 0.9) {
+        // 降低渲染质量
+        this.renderer.qualityLevel  = Math.max(0,  this.renderer.qualityLevel  - 1);
+      } else if (avgTime < targetTime * 0.6) {
+        // 提升渲染质量
+        this.renderer.qualityLevel  = Math.min(3,  this.renderer.qualityLevel  + 1);
+      }
+    }
+    this.frameTimes.push(performance.now()  - frameStartTime);
+  }
+}
+ 
+// 附加工具类
+class FoveatedRenderer {
+  constructor(renderer, options) {
+    // 实现动态视场渲染优化 
+  }
+  
+  setFocalPoint(point) {
+    // 更新中央聚焦区域
+  }
+}
+ 
+// 导出API 
+export default WebXRBridge;

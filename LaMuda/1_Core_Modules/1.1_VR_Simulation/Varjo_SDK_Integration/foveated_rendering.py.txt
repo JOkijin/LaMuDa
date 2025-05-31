@@ -1,0 +1,239 @@
+import numpy as np 
+import OpenGL.GL as gl 
+import OpenGL.GLUT as glut 
+from ctypes import c_float 
+class FoveatedRenderer:
+    """基于眼动追踪的自适应分辨率渲染系统"""
+    
+    def __init__(self, screen_res=(1920, 1080)):
+        """
+        初始化注视点渲染系统 
+        :param screen_res: 屏幕物理分辨率 (width, height)
+        """
+        # 眼动追踪参数 
+        self.gaze_point  = [0.5, 0.5]  # 初始注视点位置(标准化坐标)
+        self.saccade_threshold  = 0.01  # 眼跳检测阈值 
+        self.pupil_dilation  = 1.0  # 瞳孔扩张模拟 
+        
+        # 渲染区域参数（角度制）
+        self.high_res_fov  = 5.0    # 中心高分辨率区域视场角 
+        self.mid_res_fov  = 20.0    # 中分辨率过渡区域 
+        self.peripheral_fov  = 80.0 # 外围低分辨率区域 
+        
+        # 分辨率缩放系数 
+        self.high_res_scale  = 1.0 
+        self.mid_res_scale  = 0.5 
+        self.peripheral_scale  = 0.25 
+        
+        # 生理指标监测 
+        self.fatigue_level  = 0.0  # 疲劳程度 0.0-1.0 
+        self.last_frame_time  = 0.0 
+        
+        # 初始化渲染目标 
+        self._init_render_targets(screen_res)
+        
+    def _init_render_targets(self, res):
+        """创建多级分辨率渲染缓冲区"""
+        # 计算区域物理尺寸（像素）
+        ppd = min(res) / self.peripheral_fov   # 像素/度 
+        self.high_res_size  = int(self.high_res_fov  * ppd)
+        self.mid_res_size  = int(self.mid_res_fov  * ppd) - self.high_res_size  
+        
+        # 创建多级FBO 
+        self._create_fbo('high_res', int(self.high_res_size  * self.high_res_scale)) 
+        self._create_fbo('mid_res', int(self.mid_res_size  * self.mid_res_scale)) 
+        self._create_fbo('peripheral', int(max(res) * self.peripheral_scale)) 
+        
+        print(f"渲染目标初始化：中心区 {self.high_res_size}px  | 过渡区 {self.mid_res_size}px") 
+    
+    def _create_fbo(self, name, size):
+        """创建离屏渲染缓冲区"""
+        fbo = gl.glGenFramebuffers(1) 
+        texture = gl.glGenTextures(1) 
+        
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,  fbo)
+        gl.glBindTexture(gl.GL_TEXTURE_2D,  texture)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D,  0, gl.GL_RGBA, size, size, 0, 
+                        gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, None)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D,  gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexParameteri(gl.GL_TEXTURE_2D,  gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        
+        # 附加纹理到FBO 
+        gl.glFramebufferTexture2D(gl.GL_FRAMEBUFFER,  gl.GL_COLOR_ATTACHMENT0, 
+                                 gl.GL_TEXTURE_2D, texture, 0)
+        
+        if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER)  != gl.GL_FRAMEBUFFER_COMPLETE:
+            raise RuntimeError(f"{name} FBO创建失败")
+        
+        setattr(self, f"{name}_fbo", fbo)
+        setattr(self, f"{name}_tex", texture)
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,  0)
+    
+    def update_gaze(self, gaze_x, gaze_y):
+        """更新眼动追踪数据（输入标准化坐标[0,1]）"""
+        # 动态调节响应速度（避免眼跳时突变）
+        movement = np.sqrt((gaze_x  - self.gaze_point[0])**2  + 
+                          (gaze_y - self.gaze_point[1])**2) 
+        
+        if movement > self.saccade_threshold: 
+            self.gaze_point  = [gaze_x, gaze_y]
+        else:
+            # 平滑跟随 
+            self.gaze_point[0]  += 0.7 * (gaze_x - self.gaze_point[0]) 
+            self.gaze_point[1]  += 0.7 * (gaze_y - self.gaze_point[1]) 
+    
+    def adjust_for_fatigue(self, current_time):
+        """根据疲劳程度动态调节渲染策略"""
+        # 计算时间增量 
+        delta_t = current_time - self.last_frame_time  
+        self.last_frame_time  = current_time 
+        
+        # 疲劳模型：连续使用时疲劳度上升 
+        if delta_t < 0.1:  # 连续帧 
+            self.fatigue_level  = min(1.0, self.fatigue_level  + delta_t * 0.05)
+        else:
+            self.fatigue_level  = max(0.0, self.fatigue_level  - delta_t * 0.3)
+        
+        # 动态调整（疲劳时扩大高分辨率区域）
+        if self.fatigue_level  > 0.5:
+            scale_factor = 1.0 + (self.fatigue_level  - 0.5) * 0.6 
+            self.high_res_fov  = 5.0 * scale_factor 
+            self.mid_res_fov  = 20.0 * scale_factor 
+            
+            # 重置渲染目标 
+            self._init_render_targets(self.screen_res) 
+    
+    def render_frame(self, scene):
+        """执行分级渲染流程"""
+        # 1. 渲染高分辨率中心区 
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,  self.high_res_fbo) 
+        self._set_viewport(self.high_res_size,  self.gaze_point) 
+        scene.render(quality='high') 
+        
+        # 2. 渲染中分辨率过渡区 
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,  self.mid_res_fbo) 
+        self._set_viewport(self.mid_res_size,  self.gaze_point,  offset=self.high_res_size) 
+        scene.render(quality='medium') 
+        
+        # 3. 渲染外围区 
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,  self.peripheral_fbo) 
+        self._set_viewport(self.peripheral_size,  self.gaze_point) 
+        scene.render(quality='low') 
+        
+        # 4. 合成最终图像 
+        gl.glBindFramebuffer(gl.GL_FRAMEBUFFER,  0)
+        self._composite_layers()
+    
+    def _set_viewport(self, size, gaze_center, offset=0):
+        """设置基于注视点的视口投影矩阵"""
+        # 计算中心偏移（屏幕坐标转NDC）
+        offset_x = 2.0 * (gaze_center[0] - 0.5)
+        offset_y = 2.0 * (gaze_center[1] - 0.5)
+        
+        # 应用动态FOV调整 
+        fov_scaled = self.high_res_fov  * (1.0 + 0.3 * self.fatigue_level) 
+        
+        # 设置投影矩阵（眼动中心为基点）
+        projection = self._create_projection_matrix(size, fov_scaled, offset_x, offset_y)
+        gl.glMatrixMode(gl.GL_PROJECTION) 
+        gl.glLoadMatrixf(projection) 
+        
+        # 设置视口 
+        gl.glViewport(offset,  offset, size, size)
+    
+    def _create_projection_matrix(self, size, fov, offset_x, offset_y):
+        """生成偏移投影矩阵"""
+        aspect = 1.0 
+        near = 0.1 
+        far = 100.0 
+        
+        # 计算偏移后的视锥 
+        fov_rad = np.radians(fov) 
+        top = near * np.tan(fov_rad/2) 
+        right = top * aspect 
+        
+        left = -right + offset_x 
+        right = right + offset_x 
+        bottom = -top + offset_y 
+        top = top + offset_y 
+        
+        # 构造投影矩阵 
+        return np.array([ 
+            [2*near/(right-left), 0, (right+left)/(right-left), 0],
+            [0, 2*near/(top-bottom), (top+bottom)/(top-bottom), 0],
+            [0, 0, -(far+near)/(far-near), -2*far*near/(far-near)],
+            [0, 0, -1, 0]
+        ], dtype=c_float)
+    
+    def _composite_layers(self):
+        """融合多级渲染结果"""
+        # 使用径向渐变混合 
+        gl.glEnable(gl.GL_BLEND) 
+        gl.glBlendFunc(gl.GL_SRC_ALPHA,  gl.GL_ONE_MINUS_SRC_ALPHA)
+        
+        # 1. 绘制外围区域（全屏背景）
+        gl.glBindTexture(gl.GL_TEXTURE_2D,  self.peripheral_tex) 
+        self._draw_fullscreen_quad()
+        
+        # 2. 叠加中间过渡区 
+        gl.glBindTexture(gl.GL_TEXTURE_2D,  self.mid_res_tex) 
+        self._draw_annular_quad(inner_radius=self.high_res_fov/self.peripheral_fov,  
+                               outer_radius=self.mid_res_fov/self.peripheral_fov) 
+        
+        # 3. 叠加中心高分辨率区 
+        gl.glBindTexture(gl.GL_TEXTURE_2D,  self.high_res_tex) 
+        self._draw_circular_quad(radius=self.high_res_fov/self.peripheral_fov) 
+        
+        gl.glDisable(gl.GL_BLEND) 
+    
+    def _draw_fullscreen_quad(self):
+        """绘制全屏四边形"""
+        # 实现省略...
+    
+    def _draw_annular_quad(self, inner_radius, outer_radius):
+        """绘制环形过渡区域"""
+        # 实现省略...
+    
+    def _draw_circular_quad(self, radius):
+        """绘制圆盘状中心区"""
+        # 实现省略...
+# 硬件适配接口（Varjo XR-4）
+class VarjoXR4Adapter:
+    """Varjo XR-4眼动追踪硬件适配层"""
+    
+    def __init__(self):
+        self.gaze_data  = None 
+        
+    def get_gaze_data(self):
+        """获取眼动追踪原始数据"""
+        # 模拟硬件API调用 
+        gaze_x = np.random.uniform(0.3,  0.7)
+        gaze_y = np.random.uniform(0.3,  0.7)
+        return (gaze_x, gaze_y)
+# 使用示例 
+if __name__ == "__main__":
+    # 初始化系统 
+    renderer = FoveatedRenderer()
+    hardware = VarjoXR4Adapter()
+    
+    # 主渲染循环 
+    def render_scene():
+        current_time = glut.glutGet(glut.GLUT_ELAPSED_TIME)  / 1000.0 
+        
+        # 更新眼动数据 
+        gaze_x, gaze_y = hardware.get_gaze_data() 
+        renderer.update_gaze(gaze_x,  gaze_y)
+        
+        # 疲劳适应 
+        renderer.adjust_for_fatigue(current_time) 
+        
+        # 执行分级渲染 
+        renderer.render_frame(current_scene) 
+        
+        glut.glutSwapBuffers() 
+    
+    glut.glutInit() 
+    glut.glutInitDisplayMode(glut.GLUT_DOUBLE  | glut.GLUT_RGBA)
+    glut.glutCreateWindow("Foveated  Rendering Demo")
+    glut.glutDisplayFunc(render_scene) 
+    glut.glutMainLoop() 

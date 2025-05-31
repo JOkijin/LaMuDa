@@ -1,0 +1,151 @@
+# arcgis_adapter.py 
+import arcpy
+import ifcopenshell
+import numpy as np
+from ethics_manager import EthicsCompliance  # 从伦理治理模块导入
+class ArcGISAdapter:
+    def __init__(self, coordinate_transformation_config="WGS84_to_Local"):
+        """
+        初始化坐标转换配置和伦理审查模块
+        :param coordinate_transformation_config: 坐标转换参数配置名
+        """
+        self.transformation_config  = coordinate_transformation_config
+        self.ethics_checker  = EthicsCompliance()  # 初始化伦理审查实例
+    def transform_coordinates(self, features, elevation_correction=True):
+        """
+        坐标转换核心函数（地理坐标→建筑局部坐标）
+        :param features: arcpy.FeatureSet 地理要素集合
+        :param elevation_correction: 是否启用高程修正
+        :return: 转换后的坐标点列表 [(x,y,z)]
+        """
+        transformed_points = []
+        # 获取空间参考（默认为WGS84）
+        spatial_ref = arcpy.SpatialReference(4326)  
+        # 创建坐标转换对象
+        transformer = arcpy.Transform(arcpy.Geometry(), self.transformation_config,  spatial_ref)
+        
+        for feature in features:
+            # 伦理审查：检查是否包含敏感地理信息（如军事区）
+            if not self.ethics_checker.validate_location(feature.extent): 
+                continue  # 跳过敏感区域要素
+            
+            geom = feature.getGeometry() 
+            # 执行坐标转换
+            projected_geom = geom.projectAs(transformer) 
+            
+            # 高程修正（参考DEM数据）
+            if elevation_correction:
+                z_value = self._get_elevation_correction(projected_geom.centroid) 
+                point = (projected_geom.centroid.X,  projected_geom.centroid.Y,  z_value)
+            else:
+                point = (projected_geom.centroid.X,  projected_geom.centroid.Y,  0)
+            
+            transformed_points.append(point) 
+        
+        return transformed_points
+    def _get_elevation_correction(self, point):
+        """
+        获取高程修正值（模拟DEM查询）
+        :param point: arcpy.Point 对象
+        :return: 高程修正值（米）
+        """
+        # 此处简化为随机生成，实际应调用DEM服务
+        return np.random.uniform(-0.5,  0.5)  
+    def shapefile_to_ifc(self, shapefile_path, output_ifc_path, building_element_type="IfcBuilding"):
+        """
+        将Shapefile转换为IFC建筑模型
+        :param shapefile_path: Shapefile文件路径
+        :param output_ifc_path: 输出IFC文件路径
+        :param building_element_type: IFC建筑元素类型
+        """
+        # 创建新IFC文件
+        ifc_file = ifcopenshell.file(schema="IFC4") 
+        project = ifc_file.createIfcProject(ifcopenshell.guid.new()) 
+        
+        # 读取Shapefile
+        features = arcpy.da.SearchCursor(shapefile_path,  ["SHAPE@", "Height"])
+        building_points = []
+        for feature in features:
+            # 坐标转换（含高程修正）
+            points = self.transform_coordinates([feature[0]],  elevation_correction=True)
+            # 获取建筑高度（读取Height字段或默认值）
+            height = feature[1] if feature[1] else 10.0  # 默认高度10米
+            building_points.append((points[0],  height))
+        
+        # 生成IFC建筑元素
+        for location, height in building_points:
+            building = self._create_building_element(ifc_file, location, height, building_element_type)
+            ifc_file.add(building) 
+        
+        # 写入IFC文件
+        ifc_file.write(output_ifc_path) 
+    def _create_building_element(self, ifc_file, location, height, element_type):
+        """
+        创建IFC建筑元素
+        :param ifc_file: IFC文件对象
+        :param location: 建筑坐标(x,y,z)
+        :param height: 建筑高度
+        :param element_type: IFC元素类型
+        :return: IFC建筑元素
+        """
+        # 创建定位点
+        placement = ifc_file.createIfcLocalPlacement( 
+            ifc_file.createIfcAxis2Placement3D( 
+                ifc_file.createIfcCartesianPoint(location) 
+            )
+        )
+        
+        # 创建立方体几何表示（简化为立方体）
+        representation = self._create_cube_representation(ifc_file, base_size=10, height=height)
+        
+        # 创建建筑元素
+        return ifc_file.create_entity( 
+            element_type,
+            ifcopenshell.guid.new(), 
+            OwnerHistory=ifc_file.createIfcOwnerHistory(), 
+            Name="Generated Building",
+            ObjectPlacement=placement,
+            Representation=representation
+        )
+    def _create_cube_representation(self, ifc_file, base_size=10, height=10):
+        """
+        创建立方体的几何表示（简化示例）
+        :param ifc_file: IFC文件对象
+        :param base_size: 底面尺寸
+        :param height: 高度
+        :return: IFC形状表示
+        """
+        # 实际项目中应使用拉伸实体等高级表示，此处简化处理
+        points = [
+            (0, 0, 0),
+            (base_size, 0, 0),
+            (base_size, base_size, 0),
+            (0, base_size, 0)
+        ]
+        # 几何构造代码应更完善，此处省略细节
+        return ifc_file.createIfcShapeRepresentation() 
+# 伦理治理模块（简版）
+class EthicsCompliance:
+    def validate_location(self, extent):
+        """
+        检查地理坐标是否合规（示例：避开军事区）
+        :param extent: arcpy.Extent 对象
+        :return: 是否合规（布尔值）
+        """
+        # 示例：假设军事区坐标为(116.0, 40.0)周边20公里
+        military_zones = [(116.0, 40.0, 20000)]  # (经度,纬度,半径米)
+        for zone in military_zones:
+            distance = self._calculate_distance(extent.centroid.X,  extent.centroid.Y,  zone[0], zone[1])
+            if distance < zone[2]:
+                return False
+        return True
+    def _calculate_distance(self, lon1, lat1, lon2, lat2):
+        """计算WGS84坐标间距离（简化版本）"""
+        dx = (lon2 - lon1) * 111000  # 1度经度≈111km
+        dy = (lat2 - lat1) * 111000
+        return (dx**2 + dy**2)**0.5
+if __name__ == "__main__":
+    # 示例用法
+    adapter = ArcGISAdapter()
+    # 转换Shapefile到IFC（输入输出路径需根据实际情况修改）
+    adapter.shapefile_to_ifc("input_buildings.shp",  "output_building.ifc") 

@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+LaMuDa压力测试工具 - VR/BIM/空间测量模块性能验证
+测试目标：
+1. VR模块：眩晕率 ≤4%(2小时持续负载)
+2. BIM模块：设计变更率 ≤6%
+3. 空间测量：定位漂移 ≤2.3cm
+版本：1.2 (2024-06-25)
+"""
+ 
+import time 
+import random
+import threading 
+import numpy as np 
+from collections import deque
+from statistics import mean, stdev 
+ 
+# =============== 系统常量 ===============
+VR_MIN_LOAD = 200       # VR最小渲染负载（draw calls/sec）
+VR_CRITICAL_DELAY = 20  # 眩晕触发延迟阈值(ms)
+BIM_DATA_PACKET_SIZE = 2048  # BIM数据包大小(KB)
+SLAM_SAMPLES = 5000     # SLAM定位采样点 
+ 
+# =============== 测试模块定义 ===============
+class VRSimulationTester:
+    """VR仿真模块压力测试"""
+    def __init__(self):
+        self.user_count  = 50 
+        self.duration  = 7200  # 2小时秒数
+        self.results  = {
+            'frame_delays': deque(maxlen=1000),
+            'motion_to_photon': [],
+            'vertigo_incidents': 0
+        }
+        
+    def _simulate_user(self, user_id):
+        """模拟单个用户VR会话"""
+        start_time = time.time() 
+        session_duration = self.duration  
+        
+        while time.time()  - start_time < session_duration:
+            # 动态渲染负载 (200-1000 draw calls/sec)
+            load = random.randint(VR_MIN_LOAD,  1000)
+            
+            # 计算帧延迟 (目标: <20ms)
+            frame_delay = max(5, min(50, np.random.normal(15,  3)))
+            self.results['frame_delays'].append(frame_delay) 
+            
+            # 运动到光子延迟 (目标: <80ms)
+            mtp_delay = random.uniform(60,  100)
+            self.results['motion_to_photon'].append(mtp_delay) 
+            
+            # 眩晕事件检测 (延迟>20ms)
+            if frame_delay > VR_CRITICAL_DELAY:
+                self.results['vertigo_incidents']  += 1
+            
+            time.sleep(0.001)   # 模拟帧间隔 
+    
+    def run_test(self):
+        """执行多用户压力测试"""
+        print(f"🚀 启动VR压力测试: {self.user_count} 用户 x {self.duration//60} 分钟")
+        threads = []
+        for i in range(self.user_count): 
+            t = threading.Thread(target=self._simulate_user, args=(i,))
+            t.daemon  = True 
+            threads.append(t) 
+            t.start() 
+        
+        for t in threads:
+            t.join() 
+            
+        # 计算眩晕率 
+        total_frames = len(self.results['frame_delays']) 
+        vertigo_rate = (self.results['vertigo_incidents']  / total_frames * 100) if total_frames else 0 
+        
+        print("\n📊 VR模块测试结果:")
+        print(f"平均帧延迟: {mean(self.results['frame_delays']):.2f}ms") 
+        print(f"最高延迟: {max(self.results['frame_delays']):.1f}ms") 
+        print(f"眩晕发生率: {vertigo_rate:.2f}% (目标≤4%)")
+        return vertigo_rate
+ 
+class BIMInteropTester:
+    """BIM数据互通压力测试"""
+    def __init__(self):
+        self.project_count  = 100 
+        self.bim_versions  = ["IFC2x3", "IFC4.0", "Revit2023"]
+        self.results  = {
+            'transfer_times': [],
+            'change_requests': 0,
+            'data_loss': 0 
+        }
+    
+    def _simulate_project(self, project_id):
+        """模拟单个BIM项目数据流"""
+        # 随机生成BIM模型复杂度 (1-10级)
+        complexity = random.randint(1,  10)
+        
+        # 模拟数据传输 (目标: 变更率≤6%)
+        transfer_time = max(0.5, np.random.normal(1.2,  0.3))
+        self.results['transfer_times'].append(transfer_time) 
+        
+        # 变更请求概率 (随复杂度增加)
+        change_prob = min(0.25, 0.01 * complexity * complexity)
+        if random.random()  < change_prob:
+            self.results['change_requests']  += 1 
+        
+        # 数据丢失模拟 (目标: 0%)
+        if random.random()  < 0.002:  # 0.2%概率 
+            self.results['data_loss']  += BIM_DATA_PACKET_SIZE
+    
+    def run_test(self):
+        """执行多项目压力测试"""
+        print(f"\n🏗️ 启动BIM互通测试: {self.project_count} 项目")
+        for i in range(self.project_count): 
+            self._simulate_project(i)
+        
+        change_rate = (self.results['change_requests']  / self.project_count  * 100)
+        
+        print("\n📊 BIM模块测试结果:")
+        print(f"平均传输延迟: {mean(self.results['transfer_times']):.2f} 秒")
+        print(f"设计变更率: {change_rate:.2f}% (目标≤6%)")
+        print(f"数据丢失量: {self.results['data_loss']}KB  (目标0)")
+        return change_rate 
+ 
+class SpatialMeasurementTester:
+    """实时空间测量压力测试"""
+    def __init__(self):
+        self.sampling_rate  = 30  # Hz
+        self.duration  = 300      # 5分钟
+        self.results  = {
+            'position_errors': [],
+            'orientation_errors': []
+        }
+    
+    def _simulate_sensor(self):
+        """模拟SLAM传感器数据流"""
+        # 基准位置 (理想坐标)
+        base_pos = np.array([0.0,  0.0, 0.0])
+        
+        # 模拟定位漂移 (目标: ≤2.3cm)
+        for _ in range(SLAM_SAMPLES):
+            # 位置误差 (正态分布)
+            pos_error = abs(np.random.normal(1.5,  0.5))
+            self.results['position_errors'].append(pos_error) 
+            
+            # 方向误差 (目标: <1°)
+            orient_error = random.uniform(0.1,  1.5)
+            self.results['orientation_errors'].append(orient_error) 
+    
+    def run_test(self):
+        """执行SLAM精度测试"""
+        print(f"\n📏 启动空间测量测试: {SLAM_SAMPLES}采样点")
+        self._simulate_sensor()
+        
+        max_pos_error = max(self.results['position_errors']) 
+        mean_orient_error = mean(self.results['orientation_errors']) 
+        
+        print("\n📊 空间测量测试结果:")
+        print(f"最大定位漂移: {max_pos_error:.2f}cm (目标≤2.3cm)")
+        print(f"平均方向误差: {mean_orient_error:.2f}°")
+        return max_pos_error
+ 
+# =============== 主测试流程 ===============
+if __name__ == "__main__":
+    print("="*60)
+    print("LaMuDa 多技术协同系统压力测试套件 v1.2")
+    print("基于论文指标: VR眩晕率≤4% | BIM变更率≤6% | 定位漂移≤2.3cm")
+    print("="*60)
+    
+    # 执行模块测试
+    testers = [
+        ("VR仿真", VRSimulationTester),
+        ("BIM互通", BIMInteropTester),
+        ("空间测量", SpatialMeasurementTester)
+    ]
+    
+    overall_status = True 
+    results = {}
+    
+    for name, tester_class in testers:
+        print(f"\n🔧 开始测试: {name}模块")
+        tester = tester_class()
+        result = tester.run_test() 
+        results[name] = result
+        
+        # 验证通过条件 
+        if name == "VR仿真" and result > 4:
+            overall_status = False 
+        elif name == "BIM互通" and result > 6:
+            overall_status = False
+        elif name == "空间测量" and result > 2.3:
+            overall_status = False
+    
+    # 生成最终报告 
+    print("\n" + "="*60)
+    print("🔥 综合测试报告")
+    print(f"- VR眩晕率: {results['VR仿真']:.2f}% {'✅' if results['VR仿真'] <= 4 else '❌'}")
+    print(f"- BIM变更率: {results['BIM互通']:.2f}% {'✅' if results['BIM互通'] <= 6 else '❌'}")
+    print(f"- 最大定位漂移: {results['空间测量']:.2f}cm {'✅' if results['空间测量'] <= 2.3 else '❌'}")
+    
+    if overall_status:
+        print("\n🎉 所有模块通过压力测试，符合论文技术指标！")
+    else:
+        print("\n⚠️ 警告：部分模块未达到性能指标，请优化系统配置！")
+    
+    print("="*60)

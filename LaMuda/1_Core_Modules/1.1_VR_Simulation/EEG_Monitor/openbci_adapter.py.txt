@@ -1,0 +1,187 @@
+import numpy as np import pandas as pd import matplotlib.pyplot as plt from scipy import signal from threading import Thread, Event import socket import time import pylsl
+
+class OpenBCIAdapter: def init(self, board_type='cyton', sample_rate=250, buffer_size=5): """ 初始化EEG适配器
+
+    参数:
+    board_type: 设备类型 ('cyton' 或 'ganglion')
+    sample_rate: 采样率 (Hz)
+    buffer_size: 数据缓冲时长 (秒)
+    """
+    self.board_type  = board_type 
+    self.sample_rate  = sample_rate
+    self.buffer_size  = buffer_size 
+    
+    # EEG数据缓冲区 
+    self.buffer  = pd.DataFrame(columns=['timestamp', 'channel1', 'channel2', 'channel3', 'channel4'])
+    
+    # 疲劳检测阈值 
+    self.THETA_THRESHOLD = 0.40  # θ波功率占比阈值
+    self.CONSECUTIVE_COUNT = 5   # 连续超标次数阈值 
+    
+    # 设备连接状态
+    self.is_connected  = False
+    self.stream_thread  = None 
+    self.stop_event  = Event()
+    
+    # 系统通信配置 
+    self.host  = '127.0.0.1'
+    self.port  = 65432 
+    self.sock  = socket.socket(socket.AF_INET,  socket.SOCK_STREAM)
+
+def connect(self):
+    """连接OpenBCI设备并启动数据流"""
+    try:
+        print(f"⚡ 正在连接OpenBCI {self.board_type.upper()} 设备...")
+        
+        # 搜索LSL流 (实际部署需根据设备配置调整)
+        streams = pylsl.resolve_stream('type',  'EEG')
+        self.inlet  = pylsl.StreamInlet(streams[0])
+        print("✅ 设备连接成功 | 采样率:", self.inlet.info().nominal_srate()) 
+        
+        self.is_connected  = True 
+        self._start_streaming()
+        return True
+    except Exception as e:
+        print(f"❌ 连接失败: {str(e)}")
+        return False 
+
+def _start_streaming(self):
+    """启动数据流线程"""
+    self.stop_event.clear() 
+    self.stream_thread  = Thread(target=self._stream_data)
+    self.stream_thread.daemon  = True
+    self.stream_thread.start() 
+    print("📡 EEG数据流已启动")
+
+def _stream_data(self):
+    """持续获取EEG数据"""
+    while not self.stop_event.is_set(): 
+        # 从LSL获取样本 
+        sample, timestamp = self.inlet.pull_sample(timeout=1.0) 
+        if sample:
+            # 通道数据转换 (根据实际设备调整)
+            if self.board_type  == 'cyton':
+                channels = sample[:4]  # 前4个通道 
+            else:  # ganglion 
+                channels = sample
+            
+            # 添加到缓冲区 
+            new_row = {
+                'timestamp': time.time(), 
+                'channel1': channels[0],
+                'channel2': channels[1],
+                'channel3': channels[2],
+                'channel4': channels[3]
+            }
+            self.buffer  = self.buffer.append(new_row,  ignore_index=True)
+            
+            # 保持缓冲区大小
+            if len(self.buffer)  > self.sample_rate  * self.buffer_size: 
+                self.buffer  = self.buffer.iloc[1:] 
+            
+            # 实时分析
+            self._analyze_eeg()
+
+def _analyze_eeg(self):
+    """分析EEG缓冲区数据"""
+    if len(self.buffer)  < self.sample_rate  * 2:  # 至少2秒数据 
+        return
+    
+    theta_power_ratios = []
+    
+    # 分析每个通道
+    for ch in ['channel1', 'channel2', 'channel3', 'channel4']:
+        # 带通滤波 (4-8Hz θ波)
+        b, a = signal.butter(4,  [4, 8], btype='bandpass', fs=self.sample_rate) 
+        filtered = signal.filtfilt(b,  a, self.buffer[ch].values) 
+        
+        # 计算功率谱密度
+        freqs, psd = signal.welch( 
+            filtered, 
+            fs=self.sample_rate,  
+            nperseg=256 
+        )
+        
+        # 计算θ波功率占比
+        theta_mask = (freqs >= 4) & (freqs <= 8)
+        total_power = np.sum(psd) 
+        theta_power = np.sum(psd[theta_mask]) 
+        ratio = theta_power / total_power if total_power > 0 else 0 
+        theta_power_ratios.append(ratio) 
+    
+    # 平均通道值 
+    avg_ratio = np.mean(theta_power_ratios) 
+    
+    # 触发疲劳警报 
+    if avg_ratio > self.THETA_THRESHOLD:
+        self.consecutive_count  = getattr(self, 'consecutive_count', 0) + 1
+        
+        if self.consecutive_count  >= self.CONSECUTIVE_COUNT:
+            self._send_alert(avg_ratio)
+            self.consecutive_count  = 0  # 重置计数器
+    else:
+        self.consecutive_count  = 0 
+
+def _send_alert(self, theta_ratio):
+    """向主系统发送疲劳警报"""
+    alert_msg = f"FATIGUE_ALERT: theta_power={theta_ratio:.2f}"
+    print(f"⚠️ {alert_msg}")
+    
+    try:
+        self.sock.connect((self.host,  self.port)) 
+        self.sock.sendall(alert_msg.encode('utf-8')) 
+        self.sock.close() 
+    except Exception as e:
+        print(f"❌ 警报发送失败: {str(e)}")
+
+def visualize_spectrum(self, duration=5):
+    """
+    可视化EEG频谱
+    
+    参数:
+    duration: 分析时长 (秒)
+    """
+    if not self.is_connected: 
+        print("未连接设备")
+        return
+    
+    plt.figure(figsize=(12,  8))
+    
+    # 获取最近N秒数据 
+    recent_data = self.buffer.tail(int(self.sample_rate  * duration))
+    
+    for i, ch in enumerate(['channel1', 'channel2', 'channel3', 'channel4'], 1):
+        plt.subplot(2,  2, i)
+        
+        # 计算PSD
+        freqs, psd = signal.welch( 
+            recent_data[ch], 
+            fs=self.sample_rate,  
+            nperseg=256
+        )
+        
+        # 绘制频谱 
+        plt.semilogy(freqs,  psd)
+        plt.title(f' 通道 {i} 功率谱')
+        plt.xlabel(' 频率 (Hz)')
+        plt.ylabel(' 功率谱密度')
+        plt.grid(True) 
+        
+        # 标记θ波段 
+        theta_band = (freqs >= 4) & (freqs <= 8)
+        plt.fill_between(freqs[theta_band],  psd[theta_band], color='red', alpha=0.3)
+    
+    plt.tight_layout() 
+    plt.show() 
+
+def disconnect(self):
+    """断开设备连接"""
+    if self.is_connected: 
+        self.stop_event.set() 
+        if self.stream_thread: 
+            self.stream_thread.join(timeout=2) 
+        self.is_connected  = False
+        print("🔌 设备已断开")
+
+def __del__(self):
+    self.disconnect() 

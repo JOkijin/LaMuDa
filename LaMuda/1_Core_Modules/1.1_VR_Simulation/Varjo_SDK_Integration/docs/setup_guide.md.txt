@@ -1,0 +1,17 @@
+# LaMuDa多技术协同系统部署指南
+ 
+> **核心提示**：本系统需在硬件支持 **SLAM空间定位** 与 **实时渲染** 的环境中运行，最低要求见[硬件规格](./Docs/Hardware_Requirements.md) 
+ 
+---
+ 
+## 一、硬件环境准备
+### 1. 必需设备
+```bash 
+# 基础配置（最小功能集）
+- VR头盔：Varjo XR-4 / Meta Quest Pro（支持眼动追踪）
+- 空间扫描仪：iPhone Pro系列（含LiDAR）或 Intel RealSense L515
+- 边缘计算单元：NVIDIA Jetson AGX Orin（32GB RAM）
+ 
+# 推荐配置（全功能运行）
++ 气味模拟器：Aromajoin Scent Player（需额外安装驱动）
++ 生理监测：OpenBCI Ultracortex Mark IV EEG头盔

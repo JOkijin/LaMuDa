@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+# fatigue_analyzer.py 
+# 功能：基于EEG的VR使用疲劳监测与动态调节系统
+
+import numpy as np
+from scipy import signal
+import time
+import paho.mqtt.client  as mqtt  # 用于接收OpenBCI的EEG数据流
+from enum import Enum
+
+class FatigueState(Enum):
+    NORMAL = 0
+    WARNING = 1
+    CRITICAL = 2
+
+# 配置参数（根据实验数据调整）
+THETA_BAND = (4, 7)  # θ波频率范围(Hz)
+SAMPLING_RATE = 250  # OpenBCI采样率(Hz)
+BUFFER_SIZE = 5 * SAMPLING_RATE  # 5秒数据缓冲
+THETA_THRESHOLD = 0.4  # θ波能量占比阈值（40%）
+SUSTAIN_DURATION = 30  # 持续判定时间(秒)
+
+class FatigueAnalyzer:
+    def __init__(self):
+        self.eeg_buffer  = np.zeros(BUFFER_SIZE) 
+        self.timestamps  = []
+        self.state  = FatigueState.NORMAL
+        self.last_state_change  = time.time() 
+        
+        # MQTT配置（连接OpenBCI头盔）
+        self.client  = mqtt.Client()
+        self.client.on_connect  = self.on_connect 
+        self.client.on_message  = self.on_message 
+        self.client.connect("127.0.0.1",  1883, 60)  # OpenBCI数据流地址
+        
+    def on_connect(self, client, userdata, flags, rc):
+        client.subscribe("openbci/eeg") 
+        
+    def on_message(self, client, userdata, msg):
+        """接收EEG数据（示例数据格式：'CH1,4502.3'）"""
+        try:
+            chan, val = msg.payload.decode().split(',') 
+            if chan == 'CH1':  # 假设使用前额叶电极
+                self.update_buffer(float(val)) 
+        except Exception as e:
+            print(f"EEG数据解析错误: {e}")
+    
+    def update_buffer(self, new_sample):
+        """滚动更新EEG数据缓冲区"""
+        self.eeg_buffer  = np.roll(self.eeg_buffer,  -1)
+        self.eeg_buffer[-1]  = new_sample
+        self.timestamps.append(time.time()) 
+        
+        # 保持时间窗口有效
+        if len(self.timestamps)  > BUFFER_SIZE:
+            self.timestamps.pop(0) 
+    
+    def compute_power_ratio(self):
+        """计算θ波能量占总能量比值"""
+        freqs, psd = signal.welch(self.eeg_buffer,  fs=SAMPLING_RATE, nperseg=256)
+        theta_idx = np.where((freqs  >= THETA_BAND[0]) & (freqs <= THETA_BAND[1]))[0]
+        total_idx = np.where(freqs  <= 30)[0]  # 仅分析0-30Hz频段
+        
+        theta_power = np.sum(psd[theta_idx]) 
+        total_power = np.sum(psd[total_idx]) 
+        return theta_power / (total_power + 1e-10)  # 避免除零
+    
+    def check_fatigue(self):
+        """主监测循环（每秒调用一次）"""
+        current_time = time.time() 
+        
+        # 仅当有足够数据时分析
+        if len(self.timestamps)  < BUFFER_SIZE:
+            return FatigueState.NORMAL
+        
+        ratio = self.compute_power_ratio() 
+        
+        # 状态转换逻辑
+        if ratio >= THETA_THRESHOLD:
+            if self.state  == FatigueState.NORMAL:
+                self.state  = FatigueState.WARNING
+                self.last_state_change  = current_time
+            elif self.state  == FatigueState.WARNING:
+                if current_time - self.last_state_change  >= SUSTAIN_DURATION:
+                    self.state  = FatigueState.CRITICAL
+            # 临界状态需保持至条件解除
+        else:
+            self.state  = FatigueState.NORMAL
+            self.last_state_change  = current_time
+        
+        return self.state 
+    
+    def apply_countermeasures(self, state):
+        """根据疲劳等级触发应对策略"""
+        if state == FatigueState.CRITICAL:
+            # 1. 强制切换低疲劳模式：降分辨率+80°视场角
+            self.set_vr_mode("low_fatigue") 
+            # 2. 弹出休息提示（10分钟以上）
+            self.show_rest_alert(600) 
+        elif state == FatigueState.WARNING:
+            # 降级渲染画质（关闭全局光照）
+            self.set_rendering_quality("medium") 
+    
+    # 以下为硬件控制接口（需根据具体平台实现）
+    def set_vr_mode(self, mode_name):
+        print(f"[ACTION] 切换VR模式至：{mode_name}")
+        # 实际实现应调用VR SDK，如：
+        # varjo.setFOV(80  if mode_name=="low_fatigue" else 120)
+        # varjo.setRenderResolution(0.7  if mode_name=="low_fatigue" else 1.0)
+    
+    def set_rendering_quality(self, level):
+        print(f"[ACTION] 设置渲染质量：{level}")
+        # 例如：unreal_engine.setGlobalIllumination(level  != "high")
+    
+    def show_rest_alert(self, min_seconds):
+        print(f"[ACTION] 强制休息至少 {min_seconds//60} 分钟")
+
+if __name__ == "__main__":
+    analyzer = FatigueAnalyzer()
+    analyzer.client.loop_start()   # 启动MQTT监听
+    
+    try:
+        while True:
+            current_state = analyzer.check_fatigue() 
+            analyzer.apply_countermeasures(current_state) 
+            time.sleep(1)   # 每秒检查一次
+    except KeyboardInterrupt:
+        analyzer.client.loop_stop() 

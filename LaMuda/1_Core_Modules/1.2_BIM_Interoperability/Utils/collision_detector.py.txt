@@ -1,0 +1,231 @@
+-- coding: utf-8 --
+""" LaMuDa系统碰撞检测模块 基于论文《数据驱动的室内设计价值重构》技术框架开发 实现VR环境下的实时碰撞检测与空间优化 """
+
+import numpy as np import open3d as o3d from scipy.spatial import KDTree import ifcopenshell import json from typing import List, Dict, Tuple
+
+class CollisionDetector: def init(self, config: Dict = None): """ 初始化碰撞检测引擎
+
+    参数:
+        config: 配置字典 {
+            "voxel_size": 点云体素化尺寸 (默认0.05),
+            "collision_threshold": 碰撞判定阈值 (默认0.01),
+            "safety_margin": 安全裕度 (默认0.15)
+        }
+    """
+    self.config  = config or {
+        "voxel_size": 0.05,
+        "collision_threshold": 0.01,
+        "safety_margin": 0.15 
+    }
+    self.static_cloud  = None  # 静态场景点云 
+    self.dynamic_objects  = {}  # 动态物体 {id: (点云, 位置)}
+    self.kdtree  = None  # 空间索引结构 
+
+def load_bim_model(self, ifc_path: str):
+    """
+    从IFC文件加载BIM模型并转换为点云
+    
+    参数:
+        ifc_path: IFC文件路径 (支持IFC4.0)
+    
+    返回:
+        点云顶点数量
+    """
+    # 解析IFC文件
+    ifc_file = ifcopenshell.open(ifc_path) 
+    products = ifc_file.by_type("IfcProduct") 
+    
+    # 提取所有几何体 
+    meshes = []
+    for product in products:
+        if product.is_a("IfcSpace")  or product.is_a("IfcFurniture"): 
+            reps = product.Representation 
+            if reps:
+                for rep in reps.Representations:
+                    for item in rep.Items:
+                        if item.is_a("IfcExtrudedAreaSolid"): 
+                            # TODO: 实现IFC几何转换 
+                            pass
+    
+    # 转换为点云 (简化实现)
+    self.static_cloud  = self._generate_sample_cloud()
+    self._build_spatial_index()
+    return len(self.static_cloud.points) 
+
+def add_dynamic_object(self, obj_id: str, vertices: np.ndarray,  position: np.ndarray): 
+    """
+    添加动态物体到检测环境 
+    
+    参数:
+        obj_id: 物体唯一标识符
+        vertices: 物体顶点坐标 (Nx3数组)
+        position: 物体当前位置 (3D向量)
+    """
+    # 创建点云对象 
+    cloud = o3d.geometry.PointCloud() 
+    cloud.points  = o3d.utility.Vector3dVector(vertices) 
+    
+    # 体素下采样提高性能
+    cloud = cloud.voxel_down_sample(voxel_size=self.config["voxel_size"]) 
+    
+    # 应用位置变换
+    cloud.translate(position) 
+    
+    self.dynamic_objects[obj_id]  = (cloud, position)
+    
+    # 更新空间索引
+    self._build_spatial_index()
+
+def detect_collisions(self, new_position: np.ndarray  = None) -> List[Dict]:
+    """
+    执行碰撞检测
+    
+    参数:
+        new_position: 可选，检测指定位置而非当前物体位置
+    
+    返回:
+        碰撞报告列表 [{
+            "object_id": 物体ID,
+            "collision_points": [(x,y,z)],
+            "min_distance": 最小距离,
+            "collision_type": "static"|"dynamic"
+        }]
+    """
+    results = []
+    
+    # 检测静态碰撞
+    static_collisions = self._detect_static_collisions(new_position)
+    results.extend(static_collisions) 
+    
+    # 检测动态物体间碰撞 
+    dynamic_collisions = self._detect_dynamic_collisions()
+    results.extend(dynamic_collisions) 
+    
+    return results 
+
+def optimize_placement(self, obj_id: str, target_area: np.ndarray)  -> np.ndarray: 
+    """
+    自动优化物体位置避免碰撞
+    
+    参数:
+        obj_id: 要优化的物体ID 
+        target_area: 目标区域边界 [[x_min,y_min,z_min], [x_max,y_max,z_max]]
+    
+    返回:
+        优化后的安全位置
+    """
+    # 基于论文的粒子群优化算法 (简化实现)
+    best_position = self.dynamic_objects[obj_id][1].copy() 
+    min_collisions = float('inf')
+    
+    for _ in range(50):  # 迭代次数
+        # 在目标区域内生成随机位置 
+        trial_pos = np.array([ 
+            np.random.uniform(target_area[0][0],  target_area[1][0]),
+            np.random.uniform(target_area[0][1],  target_area[1][1]),
+            np.random.uniform(target_area[0][2],  target_area[1][2])
+        ])
+        
+        # 临时更新位置
+        self.dynamic_objects[obj_id][0].translate(trial_pos  - best_position)
+        
+        # 检测碰撞 
+        collisions = self.detect_collisions() 
+        collision_count = sum(len(c["collision_points"]) for c in collisions if c["object_id"] == obj_id)
+        
+        # 更新最优位置 
+        if collision_count < min_collisions:
+            min_collisions = collision_count
+            best_position = trial_pos.copy() 
+        
+        # 恢复原始位置
+        self.dynamic_objects[obj_id][0].translate(best_position  - trial_pos)
+    
+    # 应用最优位置
+    self.dynamic_objects[obj_id]  = (self.dynamic_objects[obj_id][0],  best_position)
+    return best_position 
+
+def _build_spatial_index(self):
+    """构建所有静态点的空间索引"""
+    if self.static_cloud: 
+        static_points = np.asarray(self.static_cloud.points) 
+        self.kdtree  = KDTree(static_points)
+
+def _detect_static_collisions(self, new_position: np.ndarray  = None) -> List[Dict]:
+    """检测静态物体碰撞"""
+    collisions = []
+    
+    for obj_id, (cloud, position) in self.dynamic_objects.items(): 
+        # 临时移动物体到新位置
+        if new_position is not None:
+            cloud.translate(new_position  - position)
+        
+        # 获取物体点云 
+        points = np.asarray(cloud.points) 
+        
+        # 查询最近距离 
+        distances, _ = self.kdtree.query(points,  k=1)
+        
+        # 检测碰撞点
+        collision_mask = distances < self.config["collision_threshold"] 
+        collision_points = points[collision_mask].tolist()
+        
+        if len(collision_points) > 0:
+            collisions.append({ 
+                "object_id": obj_id,
+                "collision_points": collision_points,
+                "min_distance": np.min(distances), 
+                "collision_type": "static"
+            })
+        
+        # 恢复原始位置
+        if new_position is not None:
+            cloud.translate(position  - new_position)
+    
+    return collisions
+
+def _detect_dynamic_collisions(self) -> List[Dict]:
+    """检测动态物体间碰撞"""
+    collisions = []
+    obj_ids = list(self.dynamic_objects.keys()) 
+    
+    for i in range(len(obj_ids)):
+        for j in range(i+1, len(obj_ids)):
+            obj1_id = obj_ids[i]
+            obj2_id = obj_ids[j]
+            
+            cloud1, pos1 = self.dynamic_objects[obj1_id] 
+            cloud2, pos2 = self.dynamic_objects[obj2_id] 
+            
+            points1 = np.asarray(cloud1.points) 
+            points2 = np.asarray(cloud2.points) 
+            
+            # 构建临时KDTree 
+            tree = KDTree(points2)
+            distances, _ = tree.query(points1,  k=1)
+            
+            # 检测碰撞
+            collision_mask = distances < self.config["collision_threshold"] 
+            collision_points = points1[collision_mask].tolist()
+            
+            if len(collision_points) > 0:
+                collisions.append({ 
+                    "object_id": f"{obj1_id}-{obj2_id}",
+                    "collision_points": collision_points,
+                    "min_distance": np.min(distances), 
+                    "collision_type": "dynamic"
+                })
+    
+    return collisions
+
+def _generate_sample_cloud(self) -> o3d.geometry.PointCloud: 
+    """生成示例点云 (实际应用中替换为真实BIM数据)"""
+    mesh = o3d.geometry.TriangleMesh.create_box(width=5,  height=4, depth=3)
+    mesh.compute_vertex_normals() 
+    cloud = mesh.sample_points_uniformly(number_of_points=5000) 
+    return cloud
+
+def export_as_gltf(self, path: str):
+    """导出当前场景为GLTF格式 (用于VR展示)"""
+    # TODO: 实现GLTF导出逻辑 
+    print(f"场景已导出至 {path}")

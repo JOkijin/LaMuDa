@@ -1,0 +1,113 @@
+import unittest
+import numpy as np 
+from fov_adjustment import DynamicFOVController  # 假设的算法实现类 
+ 
+class TestDynamicFOVAdjustment(unittest.TestCase):
+    """测试动态视场调节算法（基于SIGGRAPH 2024论文）"""
+    
+    def setUp(self):
+        """初始化控制器（参数依据原文设定）"""
+        self.controller  = DynamicFOVController(
+            base_fov=110,         # 基础视场角 
+            min_fov=90,           # 最小安全视场角
+            max_fov=120,          # 最大安全视场角
+            motion_threshold=0.8, # 运动状态检测阈值(m/s²)
+            hysteresis_factor=0.2 # 迟滞因子防止抖动 
+        )
+        
+    def test_static_state(self):
+        """测试静止状态下的FOV稳定性"""
+        # 模拟静止状态（加速度接近0）
+        motion_data = [np.array([0.05, 0.02, 0.01]) for _ in range(100)]
+        
+        for data in motion_data:
+            fov = self.controller.update(data) 
+            self.assertAlmostEqual(fov,  110, delta=0.5, 
+                                  msg="静止状态FOV应保持基础值")
+ 
+    def test_high_motion_response(self):
+        """测试剧烈运动时的FOV缩减"""
+        # 模拟快速头部转动（超过阈值）
+        motion_data = [
+            np.array([0.2,  0.3, 1.5]),
+            np.array([1.8,  0.9, 2.2]),
+            np.array([3.0,  2.5, 1.8])
+        ]
+        
+        expected_fovs = [107, 98, 90]  # 预期逐步缩减到最小值 
+        
+        for data, expected in zip(motion_data, expected_fovs):
+            fov = self.controller.update(data) 
+            self.assertLessEqual(fov,  expected, 
+                                msg=f"剧烈运动时FOV应<= {expected}°, 实际{fov}°")
+ 
+    def test_gradual_recovery(self):
+        """测试运动停止后的FOV恢复过程"""
+        # 先模拟剧烈运动 
+        for _ in range(10):
+            self.controller.update(np.array([2.5,  1.8, 3.0]))
+        
+        # 模拟运动停止（10步恢复）
+        recovery_fovs = []
+        for i in range(10):
+            fov = self.controller.update(np.array([0.1,  0.05, 0.08]))
+            recovery_fovs.append(fov) 
+        
+        # 验证恢复趋势：值应单调递增且最终接近110°
+        self.assertTrue(all(recovery_fovs[i]  <= recovery_fovs[i+1] for i in range(9)),
+                        "恢复过程FOV应单调递增")
+        self.assertAlmostEqual(recovery_fovs[-1],  110, delta=2.0,
+                              msg="恢复后应接近基础值")
+ 
+    def test_hysteresis_effect(self):
+        """测试迟滞效应防止FOV抖动"""
+        # 在阈值附近震荡（0.75-0.85 m/s²）
+        motion_data = [
+            np.array([0.75,  0.10, 0.15]),
+            np.array([0.85,  0.12, 0.18]),
+            np.array([0.78,  0.11, 0.16]),
+            np.array([0.82,  0.13, 0.17])
+        ]
+        
+        fov_values = [self.controller.update(data) for data in motion_data]
+        
+        # 检查FOV变化是否小于迟滞因子允许范围 
+        max_diff = max(fov_values) - min(fov_values)
+        self.assertLess(max_diff,  2.0, 
+                       msg=f"阈值震荡时FOV变化不应超过2°, 实际变化{max_diff}°")
+ 
+    def test_borderline_safety(self):
+        """测试边界条件下的安全限制"""
+        # 尝试设置超出安全范围的FOV
+        with self.assertRaises(ValueError): 
+            self.controller.set_fov(85)   # 低于min_fov
+            
+        with self.assertRaises(ValueError): 
+            self.controller.set_fov(125)   # 高于max_fov 
+            
+        # 模拟极端运动数据
+        extreme_motion = np.array([15.0,  12.0, 18.0])
+        fov = self.controller.update(extreme_motion) 
+        self.assertEqual(fov,  90, 
+                        "极端运动下FOV应锁定最小值")
+ 
+    def test_performance_benchmark(self):
+        """性能测试：处理10000帧数据耗时"""
+        import time 
+        
+        # 生成随机运动数据
+        np.random.seed(42) 
+        motion_data = np.random.rand(10000,  3) * 5.0 
+        
+        start_time = time.perf_counter() 
+        for data in motion_data:
+            self.controller.update(data) 
+        duration = time.perf_counter()  - start_time
+        
+        # 要求每帧处理时间<0.1ms（10000帧总耗时<1秒）
+        self.assertLess(duration,  1.0, 
+                       f"10000帧处理耗时{duration:.4f}秒，超出实时要求")
+        print(f"\n性能测试: 10000帧处理耗时 = {duration*1000:.2f}ms")
+ 
+if __name__ == '__main__':
+    unittest.main(verbosity=2) 

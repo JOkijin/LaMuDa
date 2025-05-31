@@ -1,0 +1,256 @@
+"""
+LaMuDa多技术协同系统 - 约束求解引擎 
+功能：解决AI/AR/VR协同中的空间冲突、人机效能优化和伦理规则约束
+核心算法：基于混合整数规划(MIP)的动态约束求解 
+"""
+ 
+import numpy as np 
+from ortools.linear_solver  import pywraplp 
+import json 
+from scipy.spatial  import KDTree 
+from geometry_utils import Vector3, BoundingBox  # 自定义几何库 
+ 
+class ConstraintSolver:
+    def __init__(self, config_path="solver_config.json"): 
+        """
+        初始化约束求解器
+        :param config_path: 配置文件路径（包含伦理规则、物理参数等）
+        """
+        self.solver  = pywraplp.Solver.CreateSolver('SCIP')
+        self.constraints  = []
+        self.variables  = {}
+        self.load_config(config_path) 
+        
+        # 初始化空间索引数据结构 
+        self.spatial_kdtree  = None
+        self.object_bboxes  = {}
+        
+        # 效能优化参数（来自论文1-10章）
+        self.HUMAN_MACHINE_RATIO = 0.41  # 人机效能比最优阈值 
+        self.MAX_DESIGN_ENTROPY = 3.8    # 设计熵值上限
+ 
+    def load_config(self, config_path):
+        """加载伦理规则和物理约束配置"""
+        with open(config_path) as f:
+            config = json.load(f) 
+            self.ethics_rules  = config.get("ethics_rules",  {})
+            self.physical_params  = config.get("physical_params",  {})
+            
+            # 从配置创建约束变量
+            for var_def in config.get("variables",  []):
+                self.create_variable( 
+                    name=var_def["name"],
+                    var_type=var_def["type"],
+                    lb=var_def.get("min"), 
+                    ub=var_def.get("max") 
+                )
+ 
+    def create_variable(self, name, var_type='continuous', lb=None, ub=None):
+        """
+        创建优化变量
+        :param var_type: continuous/integer/binary
+        """
+        if var_type == 'continuous':
+            var = self.solver.NumVar(lb  or -self.solver.infinity(),  
+                                    ub or self.solver.infinity(),  
+                                    name)
+        elif var_type == 'integer':
+            var = self.solver.IntVar(lb  or -self.solver.infinity(),  
+                                    ub or self.solver.infinity(),  
+                                    name)
+        else:  # binary
+            var = self.solver.BoolVar(name) 
+            
+        self.variables[name]  = var 
+        return var 
+ 
+    def add_spatial_constraint(self, object_id, bbox, fixed_objects):
+        """
+        添加空间冲突约束（基于AR/VR协同需求）
+        :param object_id: 当前物体ID
+        :param bbox: 物体包围盒(BoundingBox对象)
+        :param fixed_objects: 已锁定物体 {id: BoundingBox}
+        """
+        # 记录物体空间信息 
+        self.object_bboxes[object_id]  = bbox 
+        
+        # 构建空间索引（首次调用时初始化）
+        if not self.spatial_kdtree: 
+            positions = [obj.center() for obj in fixed_objects.values()] 
+            self.spatial_kdtree  = KDTree(positions)
+        
+        # 寻找邻近物体（半径2米范围内）
+        neighbors = self.spatial_kdtree.query_ball_point(bbox.center(),  2.0)
+        
+        # 添加非穿透约束（公式参考论文第5章）
+        for idx in neighbors:
+            neighbor_id = list(fixed_objects.keys())[idx] 
+            if neighbor_id == object_id:
+                continue 
+                
+            n_bbox = fixed_objects[neighbor_id]
+            # 创建分离约束：dist >= min_clearance 
+            min_dist = self.physical_params.get("min_clearance",  0.15)
+            constraint = self.solver.Constraint(min_dist,  self.solver.infinity()) 
+            
+            # 距离变量：dist = |pos_i - pos_j|
+            dist_var = self.create_variable(f'dist_{object_id}_{neighbor_id}',  'continuous', 0, 10)
+            constraint.SetCoefficient(dist_var, 1)
+            
+            # 添加位置关系约束（简化版欧氏距离）
+            # 实际实现应考虑空间分割优化（如Octree）
+            self.add_distance_constraint(object_id,  neighbor_id, dist_var)
+ 
+    def add_ethics_constraint(self, design_properties):
+        """
+        添加伦理约束（防止算法偏见）
+        :param design_properties: 设计方案特征字典
+        """
+        # 风格多样性约束（解决论文第3章提到的轻奢风泛滥问题）
+        style = design_properties.get('style') 
+        if style in self.ethics_rules.get('style_quotas',  {}):
+            max_ratio = self.ethics_rules['style_quotas'][style] 
+            style_count = self.variables.get(f'style_{style}_count',  0)
+            total_designs = self.variables.get('total_designs',  1)
+            
+            constraint = self.solver.Constraint(0,  max_ratio)
+            constraint.SetCoefficient(style_count, 1)
+            constraint.SetCoefficient(total_designs, -max_ratio)
+ 
+        # 设计熵值约束（论文第4章创新度量化）
+        entropy = self.calculate_entropy(design_properties) 
+        constraint = self.solver.Constraint(entropy,  self.MAX_DESIGN_ENTROPY)
+        constraint.SetCoefficient(self.variables['design_entropy'],  1)
+ 
+    def add_human_machine_constraint(self, task_type):
+        """
+        添加人机协作约束（优化效能比）
+        :param task_type: 任务分类（creative/technical/routine）
+        """
+        # 获取任务自动化变量 
+        auto_var = self.variables.get(f'automation_{task_type}') 
+        if not auto_var:
+            auto_var = self.create_variable(f'automation_{task_type}',  'continuous', 0, 1)
+        
+        # 人机效能比约束（论文范式转移模型）
+        target_ratio = self.HUMAN_MACHINE_RATIO 
+        constraint = self.solver.Constraint( 
+            target_ratio - 0.05, 
+            target_ratio + 0.05
+        )
+        constraint.SetCoefficient(auto_var, 1)
+        
+        # 关联任务重要性权重
+        weight = self.ethics_rules.get('task_weights',  {}).get(task_type, 1.0)
+        constraint = self.solver.Constraint(0,  self.solver.infinity()) 
+        constraint.SetCoefficient(auto_var, weight)
+        constraint.SetCoefficient(self.variables['total_automation'],  -1)
+ 
+    def solve(self, objective='minimize_energy'):
+        """执行约束求解"""
+        # 设置优化目标（默认最小化能耗）
+        objective_func = self.solver.Objective() 
+        
+        if objective == 'minimize_energy':
+            for var in self.energy_vars: 
+                objective_func.SetCoefficient(var, self.energy_coeffs[var.name()]) 
+        elif objective == 'maximize_efficiency':
+            objective_func.SetCoefficient(self.variables['system_efficiency'],  -1)
+        
+        objective_func.SetMinimization()
+        
+        # 执行求解
+        status = self.solver.Solve() 
+        
+        # 解析结果
+        if status == pywraplp.Solver.OPTIMAL:
+            return self._collect_solution()
+        else:
+            raise RuntimeError(f"No optimal solution found. Status: {status}")
+ 
+    def _collect_solution(self):
+        """收集求解结果"""
+        solution = {
+            'status': 'optimal',
+            'variables': {},
+            'violations': self._detect_constraint_violations()
+        }
+        
+        for name, var in self.variables.items(): 
+            if var.name()  in self.sensitive_vars:   # 过滤敏感变量
+                continue 
+            solution['variables'][name] = var.solution_value() 
+        
+        # 添加空间冲突报告 
+        solution['spatial_conflicts'] = self._check_spatial_conflicts()
+        return solution 
+ 
+    def _check_spatial_conflicts(self):
+        """检测空间约束违反情况（AR/VR协同校验）"""
+        conflicts = []
+        for obj_id, bbox in self.object_bboxes.items(): 
+            # 动态物体位置校验（误差<3mm）
+            actual_pos = get_actual_position(obj_id)  # 从AR系统获取实际位置
+            solved_pos = self.variables[f'pos_{obj_id}'] 
+            if Vector3.distance(actual_pos,  solved_pos) > 0.003:
+                conflicts.append({ 
+                    'object': obj_id,
+                    'constraint': 'position_accuracy',
+                    'deviation': f"{Vector3.distance(actual_pos,  solved_pos):.5f}m"
+                })
+                
+            # 碰撞检测（论文测试标准）
+            for other_id, other_bbox in self.object_bboxes.items(): 
+                if other_id == obj_id: 
+                    continue 
+                if bbox.intersects(other_bbox): 
+                    conflicts.append({ 
+                        'objects': [obj_id, other_id],
+                        'constraint': 'collision_free',
+                        'penetration': bbox.penetration_depth(other_bbox) 
+                    })
+        return conflicts 
+ 
+    # ----------------- 效用函数 -------------------
+    @staticmethod
+    def calculate_entropy(design_props):
+        """计算设计方案熵值（论文创新度量化模型）"""
+        # 简化实现：实际应使用论文中的多维度评估 
+        diversity_score = len(set(design_props.values()))  / len(design_props)
+        style_rarity = 1 - design_props.get('style_frequency',  0.5)
+        return -np.log(diversity_score  * style_rarity + 1e-6)
+ 
+    def add_distance_constraint(self, obj1, obj2, dist_var):
+        """添加空间距离约束（欧氏距离近似）"""
+        # 获取位置变量 
+        x1 = self.variables[f'pos_{obj1}_x'] 
+        y1 = self.variables[f'pos_{obj1}_y'] 
+        z1 = self.variables[f'pos_{obj1}_z'] 
+        
+        x2 = self.variables[f'pos_{obj2}_x'] 
+        y2 = self.variables[f'pos_{obj2}_y'] 
+        z2 = self.variables[f'pos_{obj2}_z'] 
+        
+        # 添加二次约束近似（实际应使用锥优化）
+        self.solver.Add(dist_var**2  >= (x1-x2)**2 + (y1-y2)**2 + (z1-z2)**2)
+ 
+if __name__ == "__main__":
+    # 示例用法 
+    solver = ConstraintSolver("config/ethics_rules.json") 
+    
+    # 添加VR设备约束（参考论文第7章）
+    solver.add_vr_headset_constraints( 
+        model="Varjo XR-4", 
+        max_usage_duration=7200,  # 2小时
+        min_rest_interval=300
+    )
+    
+    # 添加设计方案伦理约束
+    solver.add_ethics_constraint({ 
+        'style': 'minimalist',
+        'style_frequency': 0.67  # 当前风格流行度 
+    })
+    
+    # 求解并输出 
+    solution = solver.solve(objective='maximize_efficiency') 
+    print("优化方案：", solution)

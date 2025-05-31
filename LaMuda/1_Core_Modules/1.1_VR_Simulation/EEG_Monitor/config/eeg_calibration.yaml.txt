@@ -1,0 +1,66 @@
+# EEG校准配置文件 
+# 系统：LaMuDa多技术协同系统 VR仿真模块 
+# 功能：θ波分析模型参数配置 用于长时使用疲劳监测 
+# 参考：OpenBCI头盔+θ波分析模型（θ波>40%时切换低强度模式）
+ 
+device:
+  type: "OpenBCI_CytonDaisy"   # 硬件型号 
+  sampling_rate: 250           # 采样率(Hz)
+  channels: [1, 2, 5, 7]       # 使用通道(Fp1,Fp2,Cz,Pz)
+  impedance_threshold: 30      # 电极阻抗阈值(kΩ)
+ 
+processing:
+  prefilter:
+    highpass: 1.0              # 高通滤波(Hz)
+    lowpass: 45.0              # 低通滤波(Hz)
+    notch: 50.0                # 陷波滤波(Hz)
+ 
+theta_analysis:
+  frequency_range: [4.0, 8.0]  # θ波频段(Hz)
+  window_size: 2.0             # 分析窗口(秒)
+  overlap: 1.5                 # 窗口重叠(秒)
+  baseline_period: 30          # 基线采集时间(秒)
+ 
+thresholds:
+  theta_alert: 0.4            # θ波功率占比>40%告警 
+  duration_for_action: 15     # 持续告警时间触发动作(秒)
+ 
+actions:
+  - trigger: "theta_alert"
+    action: "mode_switch"
+    target_mode: "low_intensity"  # 切换VR渲染模式 
+    parameters:
+      resolution_scale: 0.7 
+      fps_limit: 60 
+      disable_effects: ["ambient_occlusion", "ray_tracing"]
+ 
+  - trigger: "persistent_alert"
+    action: "system_notification"
+    message: "建议休息15分钟"
+ 
+calibration_protocol:
+  phase1:                     # 闭眼静息态校准 
+    duration: 120             # 持续时间(秒)
+    conditions: "eyes_closed"
+    required_theta_range: [0.35, 0.5]  # θ波预期占比范围 
+ 
+  phase2:                     # 睁眼任务态校准 
+    duration: 180 
+    task: "vr_navigation"
+    difficulty_level: 3 
+    max_theta_deviation: 0.15 # θ波动最大允许偏差 
+ 
+visualization:
+  enable_realtime_plot: true 
+  display_metrics: ["theta_power", "relative_energy", "fatigue_index"]
+  color_scheme: "plasma"
+ 
+data_handling:
+  save_raw_data: false        # 原始数据存储开关 
+  encrypted_storage: true 
+  retention_period: 72        # 数据保留时间(小时)
+ 
+version_control:
+  config_version: "1.2"
+  compatible_firmware: [">=2.4.0"]
+  last_updated: "2024-06-05"

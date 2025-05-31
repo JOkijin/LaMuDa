@@ -1,0 +1,224 @@
+#!/usr/bin/env python3 
+# hyperledger_recorder.py  
+# 基于Hyperledger Fabric的设计版权存证系统 
+# 实现论文中"秒级确权"与"3分钟追溯响应"的核心要求 
+ 
+from fabric_sdk_py import Gateway, Contract, Network 
+from hashlib import sha3_256 
+import json 
+import time 
+import uuid 
+ 
+class DesignCopyrightRecorder:
+    def __init__(self):
+        # 论文中要求的设计版权存证平台初始化 
+        self.gateway  = Gateway()
+        self._connect_fabric()
+        self.contract  = self._get_contract()
+        self.ipfs_nodes  = ["https://ipfs.node1.lamuda",  "https://ipfs.node2.lamuda"] 
+        
+    def _connect_fabric(self):
+        """连接Hyperledger Fabric网络（论文4.1节伦理治理方案）"""
+        try:
+            # 符合论文要求的加密配置 
+            crypto_config = {
+                'crypto_suite': 'ECDSAP256',
+                'hash_algorithm': 'SHA3-256',
+                'signature_scheme': 'ECDSA'
+            }
+            self.gateway.connect( 
+                endpoint='grpcs://fabric-network.lamuda-system:7054', 
+                identity='admin@lamuda.org', 
+                crypto_config=crypto_config 
+            )
+            print("✅ 已连接到Hyperledger Fabric网络")
+        except Exception as e:
+            print(f"❌ 区块链连接失败: {str(e)}")
+            raise ConnectionError("请检查网络配置")
+ 
+    def _get_contract(self):
+        """获取智能合约接口（论文6.1节区块链存证）"""
+        network = self.gateway.get_network('lamudachannel') 
+        return network.get_contract('designCopyrightContract') 
+ 
+    def _ipfs_upload(self, design_data):
+        """上传设计文件到IPFS集群（符合论文要求的分布式存储）"""
+        # 论文4.4节提到的数据存储方案 
+        content_hash = sha3_256(design_data).hexdigest()
+        # 模拟IPFS上传（实际实现需用ipfshttpclient）
+        print(f"📤 设计文件已上传至IPFS，哈希值: {content_hash[:12]}...")
+        return f"ipfs://{content_hash}"
+ 
+    def _generate_copyright_id(self, designer_id):
+        """生成唯一版权ID（论文6.1节确权机制）"""
+        # 格式: LMD-时间戳-设计师ID哈希 
+        timestamp = int(time.time()  * 1000)
+        unique_suffix = sha3_256(f"{designer_id}{uuid.uuid4()}".encode()).hexdigest()[:8] 
+        return f"LMD-{timestamp}-{unique_suffix.upper()}" 
+ 
+    def register_design(self, designer_id, design_data, metadata):
+        """
+        设计版权注册（实现论文要求的秒级确权）
+        :param designer_id: 设计师身份ID (RFC-4514格式)
+        :param design_data: 设计文件二进制内容 
+        :param metadata: 设计元数据 (JSON格式)
+        :return: 版权ID和交易收据 
+        """
+        # 步骤1: IPFS存储（论文4.4节）
+        ipfs_uri = self._ipfs_upload(design_data)
+        
+        # 步骤2: 生成唯一版权ID（论文6.1节）
+        copyright_id = self._generate_copyright_id(designer_id)
+        
+        # 步骤3: 构建区块链交易（论文图1-7版权存证流程）
+        tx_data = {
+            'copyright_id': copyright_id,
+            'designer': designer_id,
+            'ipfs_uri': ipfs_uri,
+            'metadata': metadata,
+            'timestamp': int(time.time()), 
+            'derivative_index': {}  # 初始化衍生品索引 
+        }
+        
+        # 步骤4: 提交交易（实现秒级确权）
+        try:
+            # 智能合约调用: registerDesign(copyrightId, metadata, ipfsURI)
+            submission = self.contract.submit_transaction( 
+                'registerDesign', 
+                copyright_id, 
+                json.dumps(metadata),  
+                ipfs_uri 
+            )
+            
+            # 解析交易响应（符合论文3.2节验证要求）
+            tx_receipt = json.loads(submission.decode()) 
+            print(f"✅ 版权注册成功 | ID: {copyright_id} | 区块: {tx_receipt['blockNumber']}")
+            return {
+                'copyright_id': copyright_id,
+                'tx_receipt': tx_receipt,
+                'ipfs_uri': ipfs_uri 
+            }
+            
+        except Exception as e:
+            print(f"❌ 版权注册失败: {str(e)}")
+            raise RuntimeError("区块链交易被拒绝")
+ 
+    def record_derivative(self, original_id, derivative_data, modifier_id):
+        """
+        记录衍生品设计（实现论文要求的3分钟追溯）
+        :param original_id: 原始设计版权ID 
+        :param derivative_data: 衍生设计文件 
+        :param modifier_id: 修改者身份ID 
+        :return: 衍生品记录ID 
+        """
+        # 步骤1: IPFS存储衍生版本 
+        ipfs_uri = self._ipfs_upload(derivative_data)
+        
+        # 步骤2: 生成衍生记录ID（论文6.1节追溯机制）
+        der_id = f"{original_id}_DER_{int(time.time())}" 
+        
+        # 步骤3: 在区块链添加衍生记录 
+        try:
+            # 合约调用: addDerivativeRecord(originalId, derId, modifier, ipfsURI)
+            self.contract.submit_transaction( 
+                'addDerivativeRecord',
+                original_id,
+                der_id,
+                modifier_id,
+                ipfs_uri 
+            )
+            
+            # 构建快速索引（实现3分钟响应核心）
+            derivative_index = {
+                der_id: {
+                    'modifier': modifier_id,
+                    'timestamp': int(time.time()), 
+                    'ipfs_uri': ipfs_uri,
+                    'original': original_id 
+                }
+            }
+            
+            # 更新原始设计的衍生品索引（论文图1-7追溯流程）
+            self.contract.submit_transaction( 
+                'updateDerivativeIndex',
+                original_id,
+                json.dumps(derivative_index) 
+            )
+            
+            print(f"🔄 衍生品记录成功 | 原始ID: {original_id} | 衍生ID: {der_id}")
+            return der_id 
+            
+        except Exception as e:
+            print(f"❌ 衍生品记录失败: {str(e)}")
+            raise RuntimeError("衍生品注册异常")
+ 
+    def verify_copyright(self, copyright_id):
+        """版权验证（论文4.4节验证机制）"""
+        try:
+            # 链上查询: verifyCopyright(copyrightId)
+            result = self.contract.evaluate_transaction( 
+                'verifyCopyright', 
+                copyright_id 
+            )
+            return json.loads(result.decode()) 
+        except Exception as e:
+            print(f"❌ 验证失败: {str(e)}")
+            return {'status': 'INVALID', 'error': str(e)}
+ 
+    def get_derivative_history(self, original_id):
+        """获取衍生品修改历史（实现论文3分钟追溯要求）"""
+        try:
+            start_time = time.time() 
+            
+            # 链上查询: getDerivativeIndex(originalId)
+            result = self.contract.evaluate_transaction( 
+                'getDerivativeIndex', 
+                original_id 
+            )
+            
+            history = json.loads(result.decode()) 
+            elapsed = time.time()  - start_time 
+            
+            # 记录响应时间（论文要求<3分钟）
+            print(f"⏱️ 历史追溯完成 | 条目: {len(history)} | 用时: {elapsed:.2f}s")
+            return history 
+            
+        except Exception as e:
+            print(f"❌ 历史查询失败: {str(e)}")
+            return {}
+ 
+ 
+# 示例使用（符合论文中测试场景）
+if __name__ == "__main__":
+    recorder = DesignCopyrightRecorder()
+    
+    # 模拟设计文件注册 
+    design_data = b"VR室内设计方案二进制数据..."
+    metadata = {
+        "designer": "uid=张旺,ou=导师,dc=鲁迅美术学院",
+        "project": "2030数字孪生展厅",
+        "tech_stack": ["UE5", "AutoDesk", "HoloLens2"],
+        "entropy_value": 0.83  # 论文中设计熵值指标 
+    }
+    
+    # 版权注册（秒级确权）
+    reg_result = recorder.register_design( 
+        designer_id="uid=金高峰,ou=硕士生,dc=鲁迅美术学院",
+        design_data=design_data,
+        metadata=metadata 
+    )
+    
+    # 衍生品记录 
+    der_id = recorder.record_derivative( 
+        original_id=reg_result['copyright_id'],
+        derivative_data=b"修改版设计方案...",
+        modifier_id="uid=李设计师,ou=合作方,dc=土巴兔"
+    )
+    
+    # 版权验证 
+    verification = recorder.verify_copyright(reg_result['copyright_id']) 
+    print(f"🛡️ 版权验证结果: {verification['status']}")
+    
+    # 追溯历史（应<180秒）
+    history = recorder.get_derivative_history(reg_result['copyright_id']) 
+    print(f"📜 修改历史记录: {list(history.keys())}") 

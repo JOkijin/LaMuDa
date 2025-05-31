@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""
+GDPR合规数据清除模块 
+实现参考文本要求的个人数据匿名化处理 
+支持区块链存证数据关联处理
+"""
+ 
+import os 
+import argparse 
+import psycopg2 
+import boto3 
+import hashlib
+import json 
+from web3 import Web3
+from datetime import datetime 
+ 
+# 配置参数（实际应用中应从环境变量获取）
+DB_HOST = os.getenv('DB_HOST',  'localhost')
+DB_NAME = os.getenv('DB_NAME',  'design_db')
+DB_USER = os.getenv('DB_USER',  'postgres')
+S3_BUCKET = os.getenv('S3_BUCKET',  'design-assets')
+BLOCKCHAIN_RPC = os.getenv('BLOCKCHAIN_RPC',  'https://mainnet.infura.io/v3/YOUR_PROJECT_ID') 
+CONTRACT_ADDRESS = os.getenv('CONTRACT_ADDRESS',  '0xYourContractAddress')
+ 
+class GDPRDataCleaner:
+    def __init__(self, user_id):
+        self.user_id  = user_id
+        self.anon_id  = self._generate_anon_id()
+        self.db_conn  = self._connect_db()
+        self.s3_client = boto3.client('s3') 
+        self.web3  = Web3(Web3.HTTPProvider(BLOCKCHAIN_RPC))
+        
+    def _connect_db(self):
+        """建立数据库连接（使用环境变量配置）"""
+        return psycopg2.connect( 
+            host=DB_HOST,
+            database=DB_NAME,
+            user=DB_USER,
+            password=os.getenv('DB_PASSWORD') 
+        )
+    
+    def _generate_anon_id(self):
+        """生成不可逆匿名ID (SHA-256)"""
+        salt = os.urandom(16) 
+        raw_data = f"{self.user_id}-{datetime.utcnow().isoformat()}".encode() 
+        return hashlib.sha256(salt  + raw_data).hexdigest()
+ 
+    def anonymize_database_records(self):
+        """核心数据匿名化处理 (参考文本4.2节)"""
+        with self.db_conn.cursor()  as cursor:
+            # 用户主表匿名化
+            cursor.execute(""" 
+                UPDATE users SET 
+                email = %s,
+                phone = NULL,
+                address = 'GDPR_REDACTED',
+                full_name = 'Anonymous User'
+                WHERE id = %s 
+            """, (f"anon_{self.anon_id}@gdpr.example",  self.user_id)) 
+            
+            # 设计项目关联数据 
+            cursor.execute(""" 
+                UPDATE projects SET 
+                client_contact = 'GDPR_REDACTED',
+                billing_info = NULL
+                WHERE owner_id = %s
+            """, (self.user_id,)) 
+            
+            # AR空间测量数据脱敏
+            cursor.execute(""" 
+                DELETE FROM spatial_measurements 
+                WHERE session_id IN (
+                    SELECT session_id FROM user_sessions WHERE user_id = %s
+                )
+            """, (self.user_id,)) 
+            
+            self.db_conn.commit() 
+        print(f"[DB] 用户 {self.user_id}  数据已匿名化为 {self.anon_id}") 
+ 
+    def purge_cloud_assets(self):
+        """云存储数据处理 (参考文本4.1节)"""
+        # 列出用户所有S3对象 
+        objects = self.s3_client.list_objects_v2( 
+            Bucket=S3_BUCKET,
+            Prefix=f"users/{self.user_id}/" 
+        )['Contents']
+        
+        # 物理删除敏感文件
+        for obj in objects:
+            if 'vr_session' in obj['Key'] or 'ar_scan' in obj['Key']:
+                self.s3_client.delete_object( 
+                    Bucket=S3_BUCKET,
+                    Key=obj['Key']
+                )
+                print(f"[S3] 已删除敏感文件: {obj['Key']}")
+                
+        # 设计文件匿名化处理
+        for obj in objects:
+            if obj['Key'].endswith('.design'):
+                self.s3_client.copy_object( 
+                    Bucket=S3_BUCKET,
+                    CopySource={'Bucket': S3_BUCKET, 'Key': obj['Key']},
+                    Key=obj['Key'].replace(str(self.user_id),  self.anon_id), 
+                    MetadataDirective='REPLACE',
+                    Metadata={'GDPR_STATUS': 'ANONYMIZED'}
+                )
+                print(f"[S3] 设计文件匿名化: {obj['Key']}")
+ 
+    def update_blockchain_records(self):
+        """区块链存证更新 (参考文本伦理治理要求)"""
+        contract_abi = self._load_contract_abi()
+        contract = self.web3.eth.contract( 
+            address=CONTRACT_ADDRESS,
+            abi=contract_abi
+        )
+        
+        # 构建去标识化交易
+        transaction = contract.functions.deidentifyUser( 
+            self.user_id, 
+            self.anon_id 
+        ).buildTransaction({
+            'chainId': 1,
+            'gas': 200000,
+            'nonce': self.web3.eth.getTransactionCount('0xYourOwnerAddress'), 
+        })
+        
+        # 此处应使用硬件钱包签名（示例简化）
+        signed_txn = self.web3.eth.account.signTransaction( 
+            transaction, 
+            private_key=os.getenv('BLOCKCHAIN_PK') 
+        )
+        
+        txn_hash = self.web3.eth.sendRawTransaction(signed_txn.rawTransaction) 
+        print(f"[Blockchain] 存证更新交易已发送: {txn_hash.hex()}") 
+    
+    def _load_contract_abi(self):
+        """加载智能合约ABI（实际应从安全存储获取）"""
+        # 简化的版权存证合约ABI片段 
+        return json.loads(""" 
+        [{
+            "inputs": [
+                {"name": "userId", "type": "uint256"},
+                {"name": "anonId", "type": "string"}
+            ],
+            "name": "deidentifyUser",
+            "outputs": [],
+            "stateMutability": "nonpayable",
+            "type": "function"
+        }]
+        """)
+ 
+    def execute_full_cleanup(self):
+        """执行完整GDPR合规清理流程"""
+        print(f"=== 启动GDPR数据清除流程 (用户ID: {self.user_id})  ===")
+        self.anonymize_database_records() 
+        self.purge_cloud_assets() 
+        self.update_blockchain_records() 
+        print(f"=== 处理完成! 匿名ID: {self.anon_id}  ===")
+ 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='GDPR合规数据清除工具')
+    parser.add_argument('user_id',  type=int, help='需要清除数据的用户ID')
+    parser.add_argument('--dry-run',  action='store_true', help='试运行模式')
+    args = parser.parse_args() 
+ 
+    cleaner = GDPRDataCleaner(args.user_id) 
+    
+    if args.dry_run: 
+        print(f"[DRY RUN] 将处理用户 {args.user_id}") 
+        print(f"生成匿名ID: {cleaner.anon_id}") 
+    else:
+        cleaner.execute_full_cleanup() 

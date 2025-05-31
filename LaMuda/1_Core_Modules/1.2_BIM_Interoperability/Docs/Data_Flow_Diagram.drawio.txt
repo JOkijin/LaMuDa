@@ -1,0 +1,149 @@
+<mxfile host="app.diagrams.net"> 
+    <diagram name="技术协同系统数据流图">
+        <mxGraphModel dx="1426" dy="798" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="827" pageHeight="1169" math="0" shadow="0">
+            <root>
+                <!-- 外部实体 -->
+                <mxCell id="0" value="" style="swimlane;fontStyle=0;childLayout=stackLayout;horizontal=1;startSize=26;fillColor=none;horizontalStack=0;resizeParent=1;resizeParentMax=0;resizeLast=0;collapsible=1;marginBottom=0;align=center;fontSize=14;" vertex="1" parent="1">
+                    <mxGeometry x="60" y="80" width="180" height="280" as="geometry"/>
+                </mxCell>
+                <mxCell id="1" value="用户" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;" vertex="1" parent="0">
+                    <mxGeometry y="26" width="180" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="2" value="设计师" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;" vertex="1" parent="0">
+                    <mxGeometry y="52" width="180" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="3" value="施工团队" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;" vertex="1" parent="0">
+                    <mxGeometry y="78" width="180" height="26" as="geometry"/>
+                </mxCell>
+                <mxCell id="4" value="建材供应商" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=top;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;" vertex="1" parent="0">
+                    <mxGeometry y="104" width="180" height="26" as="geometry"/>
+                </mxCell>
+                
+                <!-- 处理过程 -->
+                <mxCell id="5" value="AI设计引擎" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+                    <mxGeometry x="280" y="120" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="BIM协同平台" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+                    <mxGeometry x="430" y="180" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" value="VR仿真系统" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+                    <mxGeometry x="280" y="240" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="8" value="AR实景交互" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+                    <mxGeometry x="430" y="300" width="120" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="9" value="区块链存证" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="1">
+                    <mxGeometry x="280" y="350" width="120" height="60" as="geometry"/>
+                </mxCell>
+                
+                <!-- 数据存储 -->
+                <mxCell id="10" value="需求数据库" style="shape=cylinder;whiteSpace=wrap;html=1;backgroundOutline=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+                    <mxGeometry x="450" y="80" width="80" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="11" value="设计资产库" style="shape=cylinder;whiteSpace=wrap;html=1;backgroundOutline=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+                    <mxGeometry x="580" y="180" width="80" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="12" value="建材数据库" style="shape=cylinder;whiteSpace=wrap;html=1;backgroundOutline=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
+                    <mxGeometry x="580" y="300" width="80" height="80" as="geometry"/>
+                </mxCell>
+                
+                <!-- 数据流箭头 -->
+                <!-- 用户到AI引擎 -->
+                <mxCell id="13" value="设计需求" style="endArrow=classic;html=1;exitX=1;exitY=0.375;entryX=0;entryY=0.5;" edge="1" source="0" target="5">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="280" y="120" as="sourcePoint"/>
+                        <mxPoint x="330" y="70" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- AI到BIM -->
+                <mxCell id="14" value="设计方案参数" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="5" target="6">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="400" y="150" as="sourcePoint"/>
+                        <mxPoint x="450" y="150" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- BIM到VR -->
+                <mxCell id="15" value="BIM模型数据" style="endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" source="6" target="7">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="490" y="240" as="sourcePoint"/>
+                        <mxPoint x="340" y="240" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- VR反馈到AI -->
+                <mxCell id="16" value="评审反馈" style="endArrow=classic;html=1;exitX=0;exitY=0.5;entryX=1;entryY=0.5;" edge="1" source="7" target="5">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="280" y="270" as="sourcePoint"/>
+                        <mxPoint x="230" y="150" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- BIM到AR -->
+                <mxCell id="17" value="施工指导数据" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="6" target="8">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="550" y="210" as="sourcePoint"/>
+                        <mxPoint x="550" y="330" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- AR到施工团队 -->
+                <mxCell id="18" value="实景定位数据" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="8" target="0">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="550" y="330" as="sourcePoint"/>
+                        <mxPoint x="240" y="330" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- AI到区块链 -->
+                <mxCell id="19" value="设计资产" style="endArrow=classic;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" edge="1" source="5" target="9">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="340" y="180" as="sourcePoint"/>
+                        <mxPoint x="340" y="350" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- 区块链到设计资产库 -->
+                <mxCell id="20" value="NFT存证" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="9" target="11">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="400" y="380" as="sourcePoint"/>
+                        <mxPoint x="580" y="220" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- 建材供应商到数据库 -->
+                <mxCell id="21" value="实时价格/库存" style="endArrow=classic;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" source="0" target="12">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="240" y="130" as="sourcePoint"/>
+                        <mxPoint x="580" y="340" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- 建材数据库到AI -->
+                <mxCell id="22" value="材料成本约束" style="endArrow=classic;html=1;exitX=0;exitY=0.5;entryX=0.5;entryY=0;" edge="1" source="12" target="5">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="580" y="340" as="sourcePoint"/>
+                        <mxPoint x="340" y="120" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- 需求数据库到AI -->
+                <mxCell id="23" value="历史需求模式" style="endArrow=classic;html=1;exitX=0;exitY=0.5;entryX=0.5;entryY=0;" edge="1" source="10" target="5">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="450" y="120" as="sourcePoint"/>
+                        <mxPoint x="340" y="120" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                
+                <!-- 伦理治理反馈 -->
+                <mxCell id="24" value="偏见检测报告" style="endArrow=classic;html=1;dashed=1;exitX=0.5;exitY=0;entryX=0.5;entryY=1;" edge="1" source="9" target="5">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="340" y="350" as="sourcePoint"/>
+                        <mxPoint x="340" y="180" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
